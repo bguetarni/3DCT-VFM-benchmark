@@ -10,6 +10,23 @@ import dicom_utils
 # CT vs CBCT: (0008, 0070) Manufacturer of CBCT is 'ELEKTA'
 # threshold for xerostomia is <500 mg/min
 
+def salivation_flow_parsing(df):
+    df = df[df["MEASTYP"] == "Stimulated salivation flow"]
+    result = {f"{row['MEASTYP']} ({row['VISITID']})": row["MEAS_VAL"] for _, row in df.iterrows()}
+    return result
+
+CLINICAL_KEYS = {
+    "age": "AGE",
+    "sexe": "SEX",
+    "hpv": "ST_HPV",
+    "arm": "ACTARMCD",
+    "inclusion_dt": "INCDT",
+    "randomization_dt": "RANDT",
+    "is_prog_recc": 'PROG',
+    "progression_dt": 'PROGDT',
+    "salivation_flow_parsing": salivation_flow_parsing,
+}
+
 def load_folder(path):
     """
     Load a folder which could be anything (collection of imaging, CT, RTDOSE, ...)
@@ -48,24 +65,22 @@ def load_folder(path):
     # print(f"{len(data)} DICOM loaded from {path}")
     return data
 
-def load_patient(path, id_map, patient_description_csv=None, efficacy_csv=None, salivary_csv=None):
+def load_patient(path, id_map, clinical_csv=None):
     """
     Load a patient folder and return images with dose and rtplan
 
     Args:
         path (str) path to patient folder
         id_map (str) path to CSV mapping folder IDs to clinical data IDs
-        patient_description_csv (str) path to patient description CSV
-        efficacy_csv (str) path to efficacy data CSV
-        salivary_csv (str) path to salivary data CSV
+        clinical_csv (List[str]) list of path to clinical data CSV file
 
     return Patient object
     """
 
-    id_map = pandas.read_excel(id_map)
     id = pathlib.Path(path).name
 
     # convert patient ID from folder to clinical data
+    id_map = pandas.read_excel(id_map)
     id = int(id_map[id_map["My Identifier ID"] == float(id)]["USUBJID"].item())
     
     # load every DICOM data of patient folder
@@ -101,44 +116,34 @@ def load_patient(path, id_map, patient_description_csv=None, efficacy_csv=None, 
 
     # load clinical data
     patient_clinical = dict()
+    if not clinical_csv is None:
 
-    if not patient_description_csv is None:
-        df = pandas.read_csv(patient_description_csv, sep=";")
+        # load and merge all clinical CSV files
+        df = None
+        for p in clinical_csv:
+            sub_df = pandas.read_csv(p, sep=";", encoding='ISO-8859-1')
+            if df is None:
+                df = sub_df
+            else:
+                # merge DataFrames based on common columns
+                common_columns = set(df.columns).intersection(set(sub_df.columns))
+                df = pandas.merge(df, sub_df, on=list(common_columns), how='inner')
+        
+        # convert USUBJID
+        df["USUBJID"] = df["USUBJID"].astype(int)
+
+        # if patient ID available gather clinical data
         if not id in df["USUBJID"].unique():
-            print(f"WARNING: patient folder id {id} not found in patient description CSV at {patient_description_csv}")
+            print(f"WARNING: patient folder id {id} not found in clinical data")
         else:
             df = df[df["USUBJID"] == id]
-            patient_clinical.update({
-                "age": df["AGE"].item(), 
-                "sexe": df["SEX"].item(), 
-                "hpv": df["ST_HPV"].item(),
-                "arm": df["ACTARMCD"].item(),
-                "incldt": df["INCDT"].item(),
-                "randdt": df["RANDT"].item(),
-                })
 
-    if not efficacy_csv is None:
-        df = pandas.read_csv(efficacy_csv, sep=";")
-        if not id in df["USUBJID"].unique():
-            print(f"WARNING: patient folder id {id} not found in patient description CSV at {efficacy_csv}")
-        else:        
-            df = df[df["USUBJID"] == id]
-            patient_clinical.update({
-                "prog_recc": df['PROG'].item(),
-                "progdt": df['PROGDT'].item(),
-                })
-    
-    if not salivary_csv is None:
-        df = pandas.read_csv(salivary_csv, sep=";")
-        if not id in df["USUBJID"].unique():
-            print(f"WARNING: patient folder id {id} not found in patient description CSV at {salivary_csv}")
-        else:
-            df = df[(df["USUBJID"] == id) & (df["MEASTYP"] == "Stimulated salivation flow")]
-            for _, row in df.iterrows():
-                if isinstance(row["MEAS_VAL"], (int, float)) or row["MEAS_VAL"].isdigit():
-                    patient_clinical.update({f"{row['MEASTYP']} ({row['VISITID']})": float(row["MEAS_VAL"])})
+            # populate patient clinical data based on CLINICAL_KEYS
+            for k, v in CLINICAL_KEYS.items():
+                if callable(v):
+                    patient_clinical.update(v(df))
                 else:
-                    patient_clinical.update({f"{row['MEASTYP']} ({row['VISITID']})": None})
+                    patient_clinical.update({k: df[v].unique()[0]})
     
     return dicom_class.Patient(
         id_=id,
