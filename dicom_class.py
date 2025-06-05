@@ -1,6 +1,5 @@
 from abc import ABC, abstractmethod
-
-import os, glob
+import os, gc
 from datetime import datetime
 import numpy as np
 import dicom2nifti
@@ -132,80 +131,61 @@ class DICOM(ABC):
 
 
 class Imaging(DICOM):
-    def get_voxel_data(self):
-        pass
-
-
-class RTDOSE(DICOM):
     def __init__(self, path):
-        """
-        Args:
-            path (str) path towards folder containing RTDOSE
-        """
         super().__init__(path)
+        self.nii = None
 
-class RTSTRUCT(DICOM):
-    def __init__(self, path):
+    def clear_nii(self):
         """
-        Args:
-            path (str) path towards folder containing RTSTRUCT
+        Call to reduce memory usage
         """
-        super().__init__(path)
+        self.nii = None
+        gc.collect()
 
-    def convert_ctr_to_voxel_space(self, original_ctr):  
-
-        # get affine transformation matrix      
-        affine = self.parent.get_affine()
+    def load_nii(self):
+        # load DICOM folder into nifti object
+        nii = dicom2nifti.convert_dicom.dicom_series_to_nifti(
+            original_dicom_directory=self.path, 
+            output_file=None,
+            reorient_nifti=False)["NII"]
         
-        # inverse affin transformation
-        inv_affine = np.linalg.inv(affine)
+        # reorient volume and affin transform into (x,y,z) (right left, anterior posterior, inferior superior)
+        current_ornt = orientations.io_orientation(nii.affine)
+        target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
+        transform = orientations.ornt_transform(current_ornt, target_ornt)
+        new_data = orientations.apply_orientation(nii.dataobj, transform)
+        new_affine = nii.affine @ orientations.inv_ornt_aff(transform, nii.dataobj.shape)
 
-        # homogeneous coordinates
-        original_ctr = np.hstack((original_ctr, np.ones((original_ctr.shape[0], 1))))
+        # build Nifti1Image
+        self.nii = nibabel.Nifti1Image(new_data, new_affine)
 
-        # apply affine transformation
-        voxel_ctr = inv_affine @ original_ctr.transpose()
-
-        # reorder axes
-        voxel_ctr = voxel_ctr.transpose().astype("int64")
-
-        # drop homogeneous coordinate
-        return voxel_ctr[:,:3]
-
-    def get_contours(self, structure_name):
+    def get_voxel_array(self):
         """
-        Return the contours in voxel space of structure
-
-        Args:
-            structure_name (str) name of structure as defined in the DICOM
+        Return image voxel data
         """
 
-        if self.parent is None:
-            print("WARNING: cannot return contours as parent is not defined for reference to voxel space affine transformation")
-            return None
+        if self.nii is None:
+            self.load_nii()
         
-        dcm = pydicom.dcmread(self.get_dcm_path())
-        roi_names = {roi.ROINumber: roi.ROIName for roi in dcm.StructureSetROISequence}
-        original_ctr = []
-        for roi_contour in dcm.ROIContourSequence:
-            if roi_names[roi_contour.ReferencedROINumber] == structure_name:
-                for contour in roi_contour.ContourSequence:
-                    coords = contour.ContourData
-                    points = list(zip(coords[0::3], coords[1::3], coords[2::3]))
-                    original_ctr.extend(points)
-                break
+        return self.nii.dataobj
+        
+    def get_affine(self):
+        """
+        Return affine transformation for machine to voxel space
+        """
 
-        return self.convert_ctr_to_voxel_space(np.asarray(original_ctr))
+        if self.nii is None:
+            self.load_nii()
+        
+        return self.nii.affine
 
-class CBCT(DICOM):
+
+class CBCT(Imaging):
     def __init__(self, path):
-        """
-        Args:
-            path (str) path towards folder containing CBCT
-        """
         super().__init__(path)
 
-class CT(DICOM):
+
+class CT(Imaging):
     def __init__(self, path, rtdose=None, rtstruct=None):
         """
         Args:
@@ -218,8 +198,6 @@ class CT(DICOM):
         # RTDOSE and RTSTRUCT objects associated to this CT
         self.rtdose = rtdose
         self.rtstruct = rtstruct
-
-        self.nii = None
         
     def add_rtdose(self, rtdose, log=None):
         """
@@ -247,29 +225,65 @@ class CT(DICOM):
         self.rtstruct = rtstruct
         self.rtstruct.set_parent(self)
 
-    def get_voxel_array(self):
+
+class RTDOSE(DICOM):
+    def __init__(self, path):
+        super().__init__(path)
+
+
+class RTSTRUCT(DICOM):
+    def __init__(self, path):
+        super().__init__(path)
+
+    def convert_ctr_to_voxel_space(self, original_ctr):  
+        # get affine transformation matrix      
+        affine = self.parent.get_affine()
+        
+        # inverse affine transformation
+        inv_affine = np.linalg.inv(affine)
+
+        # homogeneous coordinates
+        original_ctr = np.hstack((original_ctr, np.ones((original_ctr.shape[0], 1))))
+
+        # apply affine transformation
+        voxel_ctr = inv_affine @ original_ctr.transpose()
+
+        # reorder axes
+        voxel_ctr = voxel_ctr.transpose().astype("int64")
+
+        # drop homogeneous coordinate
+        return voxel_ctr[:,:3]
+
+    def get_contours(self, structure_name):
         """
-        Return image voxel data
+        Return the contours in voxel space of structure
+
+        Args:
+            structure_name (str) name of structure as defined in the DICOM
         """
 
-        if self.nii is None:
+        if self.parent is None:
+            print("WARNING: cannot return contours as parent is not defined for reference to voxel space affine transformation")
+            return None
+        
+        # read DICOM file
+        dcm = pydicom.dcmread(self.get_dcm_path())
 
-            # load DICOM folder into nifti object
-            nii = dicom2nifti.convert_dicom.dicom_series_to_nifti(
-                original_dicom_directory=self.path, 
-                output_file=None,
-                reorient_nifti=False)["NII"]
-            
-            # reorient volume into (x,y,z) (right left, anterior posterior, inferior superior)
-            current_ornt = orientations.io_orientation(nii.affine)
-            target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
-            transform = orientations.ornt_transform(current_ornt, target_ornt)
-            new_data = orientations.apply_orientation(nii.dataobj, transform)
-            new_affine = nii.affine @ orientations.inv_ornt_aff(transform, nii.dataobj.shape)
-            self.nii = nibabel.Nifti1Image(new_data, new_affine)
-            return new_data
-        else:
-            return self.nii.dataobj
+        # gather all DICOM structures name and id
+        roi_names = {roi.ROINumber: roi.ROIName for roi in dcm.StructureSetROISequence}
+
+        # gather structure coordinates
+        original_ctr = []
+        for roi_contour in dcm.ROIContourSequence:
+            if roi_names[roi_contour.ReferencedROINumber] == structure_name:
+                for contour in roi_contour.ContourSequence:
+                    coords = contour.ContourData
+                    # (x0, y0, z0, x1, y1, z1, ...)
+                    points = list(zip(coords[0::3], coords[1::3], coords[2::3]))
+                    original_ctr.extend(points)
+                break
+
+        return self.convert_ctr_to_voxel_space(np.asarray(original_ctr))
 
 
 class Patient:
