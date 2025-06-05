@@ -1,5 +1,7 @@
 import os, pathlib
 import pydicom
+import dicom2nifti
+from dicom_class import CT, CBCT, RTDOSE, RTSTRUCT
 
 def get_directory_level(path1, path2):
     """

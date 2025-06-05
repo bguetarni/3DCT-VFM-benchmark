@@ -1,18 +1,36 @@
-import os, pathlib
+from abc import ABC, abstractmethod
+
+import os, glob
 from datetime import datetime
+import numpy as np
+import dicom2nifti
 import pydicom
+import nibabel
+from nibabel import orientations
 
 """
 CT and RTDOSE/RTSTRUCT files can be matched based on the DICOM tag (0020,0052) Frame of Reference UID
 """
 
-class DICOM:
+class DICOM(ABC):
     def __init__(self, path):
         """
         Args:
             path (str) path towards folder containing DICOM files or a DICOM file itself
         """
         self.path = path
+
+        # this propriety should not be used for CT/CBCT !
+        self.parent = None
+    
+    def set_parent(self, parent):
+        """
+        Set new parent which must be a CT
+        """
+        self.parent = parent
+    
+    def get_parent(self):
+        return self.parent
     
     def get_dcm_path(self):
         if os.path.isdir(self.path):
@@ -112,6 +130,12 @@ class DICOM:
             print(f"Tag AcquisitionDate (0008,0022) not available for {path}")
             return None
 
+
+class Imaging(DICOM):
+    def get_voxel_data(self):
+        pass
+
+
 class RTDOSE(DICOM):
     def __init__(self, path):
         """
@@ -127,6 +151,51 @@ class RTSTRUCT(DICOM):
             path (str) path towards folder containing RTSTRUCT
         """
         super().__init__(path)
+
+    def convert_ctr_to_voxel_space(self, original_ctr):  
+
+        # get affine transformation matrix      
+        affine = self.parent.get_affine()
+        
+        # inverse affin transformation
+        inv_affine = np.linalg.inv(affine)
+
+        # homogeneous coordinates
+        original_ctr = np.hstack((original_ctr, np.ones((original_ctr.shape[0], 1))))
+
+        # apply affine transformation
+        voxel_ctr = inv_affine @ original_ctr.transpose()
+
+        # reorder axes
+        voxel_ctr = voxel_ctr.transpose().astype("int64")
+
+        # drop homogeneous coordinate
+        return voxel_ctr[:,:3]
+
+    def get_contours(self, structure_name):
+        """
+        Return the contours in voxel space of structure
+
+        Args:
+            structure_name (str) name of structure as defined in the DICOM
+        """
+
+        if self.parent is None:
+            print("WARNING: cannot return contours as parent is not defined for reference to voxel space affine transformation")
+            return None
+        
+        dcm = pydicom.dcmread(self.get_dcm_path())
+        roi_names = {roi.ROINumber: roi.ROIName for roi in dcm.StructureSetROISequence}
+        original_ctr = []
+        for roi_contour in dcm.ROIContourSequence:
+            if roi_names[roi_contour.ReferencedROINumber] == structure_name:
+                for contour in roi_contour.ContourSequence:
+                    coords = contour.ContourData
+                    points = list(zip(coords[0::3], coords[1::3], coords[2::3]))
+                    original_ctr.extend(points)
+                break
+
+        return self.convert_ctr_to_voxel_space(np.asarray(original_ctr))
 
 class CBCT(DICOM):
     def __init__(self, path):
@@ -145,30 +214,62 @@ class CT(DICOM):
             rtstruct (str) an RTSTRUCT object to associate to CT
         """
         super().__init__(path)
+
+        # RTDOSE and RTSTRUCT objects associated to this CT
         self.rtdose = rtdose
         self.rtstruct = rtstruct
+
+        self.nii = None
         
-    def add_rtdose(self, rtdose):
+    def add_rtdose(self, rtdose, log=None):
         """
         Add RTDOSE to CT imaging
 
         Args:
             rtdose (RTDOSE) object to add
+            log (logging.Logger) logger for warning messages
         """
-        if not self.rtdose is None:
-            print(f"WARNING: RTDOSE {self.rtdose.path} of CT {self.path} is being replaced by {rtdose.path}")
+        if not self.rtdose is None and not log is None:
+            log.warning(f"WARNING: RTDOSE {self.rtdose.path} of CT {self.path} is being replaced by {rtdose.path}")
         self.rtdose = rtdose
+        self.rtdose.set_parent(self)
 
-    def add_rtstruct(self, rtstruct):
+    def add_rtstruct(self, rtstruct, log=None):
         """
         Add RTSTRUCT to CT imaging
 
         Args:
             rtstruct (RTSTRUCT) object to add
+            log (logging.Logger) logger for warning messages
         """
-        if not self.rtstruct is None:
-            print(f"WARNING: RTSTRUCT {self.rtstruct.path} of CT {self.path} is being replaced by {rtstruct.path}")
+        if not self.rtstruct is None and not log is None:
+            log.warning(f"WARNING: RTSTRUCT {self.rtstruct.path} of CT {self.path} is being replaced by {rtstruct.path}")
         self.rtstruct = rtstruct
+        self.rtstruct.set_parent(self)
+
+    def get_voxel_array(self):
+        """
+        Return image voxel data
+        """
+
+        if self.nii is None:
+
+            # load DICOM folder into nifti object
+            nii = dicom2nifti.convert_dicom.dicom_series_to_nifti(
+                original_dicom_directory=self.path, 
+                output_file=None,
+                reorient_nifti=False)["NII"]
+            
+            # reorient volume into (x,y,z) (right left, anterior posterior, inferior superior)
+            current_ornt = orientations.io_orientation(nii.affine)
+            target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
+            transform = orientations.ornt_transform(current_ornt, target_ornt)
+            new_data = orientations.apply_orientation(nii.dataobj, transform)
+            new_affine = nii.affine @ orientations.inv_ornt_aff(transform, nii.dataobj.shape)
+            self.nii = nibabel.Nifti1Image(new_data, new_affine)
+            return new_data
+        else:
+            return self.nii.dataobj
 
 
 class Patient:

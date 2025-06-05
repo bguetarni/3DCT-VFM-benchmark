@@ -1,3 +1,4 @@
+import logging
 import os, glob, pathlib
 import pydicom
 import pandas
@@ -62,10 +63,9 @@ def load_folder(path):
         if pathlib.Path(folder).is_dir():
             data.extend(load_folder(folder))
 
-    # print(f"{len(data)} DICOM loaded from {path}")
     return data
 
-def load_patient(path, id_map, clinical_csv=None):
+def load_patient(path, id_map, clinical_csv=None, log=None):
     """
     Load a patient folder and return images with dose and rtplan
 
@@ -73,9 +73,18 @@ def load_patient(path, id_map, clinical_csv=None):
         path (str) path to patient folder
         id_map (str) path to CSV mapping folder IDs to clinical data IDs
         clinical_csv (List[str]) list of path to clinical data CSV file
+        log (str) path to file to log warnings and errors
 
     return Patient object
     """
+
+    if not log is None:
+        logging.basicConfig(
+            filename=log,
+            format='%(levelname)s: %(message)s',
+            filemode='w',
+            level=logging.DEBUG)
+        log = logging.getLogger()
 
     id = pathlib.Path(path).name
 
@@ -86,6 +95,13 @@ def load_patient(path, id_map, clinical_csv=None):
     # load every DICOM data of patient folder
     patient_data = load_folder(path)
 
+    # print number of DICOM data loaded
+    data_type = set(map(type, patient_data))
+    data_type = {k: len(list(filter(lambda i: isinstance(i, k), patient_data))) for k in data_type}
+    print(f"total data loaded from {path}")
+    for k, v in data_type.items():
+        print(f"{k}:\t {v}")
+
     # group CT with dose
     for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
         done = False
@@ -93,12 +109,12 @@ def load_patient(path, id_map, clinical_csv=None):
             if rtdose.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID() or \
                 rtdose.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
                     max(dicom_utils.get_directory_level(rtdose.path, ct.path)) < 2 and ct.rtdose is None:
-                ct.add_rtdose(rtdose)
+                ct.add_rtdose(rtdose, log)
                 done = True
                 break
 
-        if not done:
-            print(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
+        if not done and not log is None:
+            log.warning(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
 
     # group CT with struct
     for rtstruct in filter(lambda i: isinstance(i, dicom_class.RTSTRUCT), patient_data):
@@ -107,12 +123,12 @@ def load_patient(path, id_map, clinical_csv=None):
             if rtstruct.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID() or \
                 rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
                     max(dicom_utils.get_directory_level(rtstruct.path, ct.path)) < 2 and ct.rtstruct is None:
-                ct.add_rtstruct(rtstruct)
+                ct.add_rtstruct(rtstruct, log)
                 done = True
                 break
 
-        if not done:
-            print(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
+        if not done and log is None:
+            log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
 
     # load clinical data
     patient_clinical = dict()
@@ -133,8 +149,8 @@ def load_patient(path, id_map, clinical_csv=None):
         df["USUBJID"] = df["USUBJID"].astype(int)
 
         # if patient ID available gather clinical data
-        if not id in df["USUBJID"].unique():
-            print(f"WARNING: patient folder id {id} not found in clinical data")
+        if not id in df["USUBJID"].unique() and log is None:
+            log.warning(f"WARNING: patient folder id {id} not found in clinical data")
         else:
             df = df[df["USUBJID"] == id]
 
