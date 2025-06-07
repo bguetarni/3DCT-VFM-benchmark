@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 import os, gc, glob
 from datetime import datetime
 import numpy as np
@@ -144,26 +144,41 @@ class Imaging(DICOM):
         self.nii = None
         gc.collect()
 
-    def load_nii(self):
+    def load_nii(self, reorient=True, recalculate_affine=True):
+        """
+        Load DICOM folder into nifti format with or without reorientation and affine recalculation
+
+        Args:
+            reorient (bool) to reorient or not the image into LPS orientation
+            recalculate_affine (bool) to recalculate affine transformation with modified version
+        """
+
         # load DICOM folder into nifti object
         nii = dicom2nifti.convert_dicom.dicom_series_to_nifti(
             original_dicom_directory=self.path, 
             output_file=None,
             reorient_nifti=False)["NII"]
         
-        # reorient volume and affine transform into (x,y,z) (right left, anterior posterior, inferior superior)
-        current_ornt = orientations.io_orientation(nii.affine)
-        target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
-        transform = orientations.ornt_transform(current_ornt, target_ornt)
-        new_data = orientations.apply_orientation(nii.dataobj, transform)
-        
-        # create affine transform with corrected sign and deltas
-        dcm_files = glob.glob(os.path.join(self.path, "*.dcm"))
-        sorted_ = dicom2nifti.common.sort_dicoms(list(map(pydicom.dcmread, dcm_files)))
-        new_affine = create_affine(sorted_)
+        if reorient or recalculate_affine:
+            if reorient:
+                # reorient volume and affine transform into (x,y,z) (right left, anterior posterior, inferior superior)
+                current_ornt = orientations.io_orientation(nii.affine)
+                target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
+                transform = orientations.ornt_transform(current_ornt, target_ornt)
+                new_data = orientations.apply_orientation(nii.dataobj, transform)
+            else:
+                new_data = nii.dataobj
 
-        # build Nifti1Image
-        self.nii = nibabel.Nifti1Image(new_data, new_affine)
+            if recalculate_affine:
+                # create affine transform with corrected sign and deltas
+                dcm_files = glob.glob(os.path.join(self.path, "*.dcm"))
+                sorted_ = dicom2nifti.common.sort_dicoms(list(map(pydicom.dcmread, dcm_files)))
+                new_affine = create_affine(sorted_)
+            else:
+                new_affine = nii.affine
+
+            # build nifti object
+            self.nii = nibabel.Nifti1Image(new_data, new_affine)
 
     def get_voxel_array(self):
         """
