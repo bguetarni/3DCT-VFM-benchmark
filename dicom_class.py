@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
-import os, gc
+import os, gc, glob
 from datetime import datetime
 import numpy as np
 import dicom2nifti
 import pydicom
 import nibabel
 from nibabel import orientations
+
+from dicom_utils import create_affine
 
 """
 CT and RTDOSE/RTSTRUCT files can be matched based on the DICOM tag (0020,0052) Frame of Reference UID
@@ -149,12 +151,16 @@ class Imaging(DICOM):
             output_file=None,
             reorient_nifti=False)["NII"]
         
-        # reorient volume and affin transform into (x,y,z) (right left, anterior posterior, inferior superior)
+        # reorient volume and affine transform into (x,y,z) (right left, anterior posterior, inferior superior)
         current_ornt = orientations.io_orientation(nii.affine)
         target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
         transform = orientations.ornt_transform(current_ornt, target_ornt)
         new_data = orientations.apply_orientation(nii.dataobj, transform)
-        new_affine = nii.affine @ orientations.inv_ornt_aff(transform, nii.dataobj.shape)
+        
+        # create affine transform with corrected sign and deltas
+        dcm_files = glob.glob(os.path.join(self.path, "*.dcm"))
+        sorted_ = dicom2nifti.common.sort_dicoms(list(map(pydicom.dcmread, dcm_files)))
+        new_affine = create_affine(sorted_)
 
         # build Nifti1Image
         self.nii = nibabel.Nifti1Image(new_data, new_affine)
@@ -283,7 +289,7 @@ class RTSTRUCT(DICOM):
                     original_ctr.extend(points)
                 break
 
-        return self.convert_ctr_to_voxel_space(np.asarray(original_ctr))
+        return self.convert_ctr_to_voxel_space(np.asarray(original_ctr, dtype="int64"))
 
 
 class Patient:
