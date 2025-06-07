@@ -26,6 +26,7 @@ CLINICAL_KEYS = {
     "is_prog_recc": 'PROG',
     "progression_dt": 'PROGDT',
     "salivation_flow_parsing": salivation_flow_parsing,
+    "start_treatment_dt": "RTSTDT",
 }
 
 def load_folder(path):
