@@ -168,3 +168,18 @@ def load_patient(path, id_map, clinical_csv=None, log=None):
         cbct=list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
         clinical=patient_clinical,
     )
+
+
+class ARTIX:
+    def __init__(self, path):
+        self.path = path
+        self.patients = []
+
+    def add_patient(self, p):
+        self.patients.append(p)
+
+    def get_relative_path(self, subpath):
+        """
+        Return relative path to this dataset
+        """
+        return os.path.relpath(self.path, start=subpath)

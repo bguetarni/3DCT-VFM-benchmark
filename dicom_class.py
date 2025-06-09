@@ -6,6 +6,7 @@ import dicom2nifti
 import pydicom
 import nibabel
 from nibabel import orientations
+from totalsegmentator.python_api import totalsegmentator
 
 from dicom_utils import create_affine
 
@@ -199,6 +200,18 @@ class Imaging(DICOM):
             self.load_nii()
         
         return self.nii.affine
+    
+    def gather_contours(self, parotid=True, submandibular=True, use_totalsegmentator=True, tol=0.1):
+        """"
+        Gather contours from RTSTRUCT or using TotalSegmentator
+
+        Args:
+            parotid (bool) if gathering parotid glands contours
+            submandibular (bool) if gathering submandibular glands contours
+            use_totalsegmentator (bool) if True use TotalSegmentator to create missing contours
+            tol (float) threshold between RTSTRUCT contour and TotalSegmentator to considerate RTSTRUCT 
+        """
+        pass
 
 
 class CBCT(Imaging):
@@ -245,6 +258,14 @@ class CT(Imaging):
             log.warning(f"WARNING: RTSTRUCT {self.rtstruct.path} of CT {self.path} is being replaced by {rtstruct.path}")
         self.rtstruct = rtstruct
         self.rtstruct.set_parent(self)
+
+    def apply_totalsegmentator(self):
+        self.load_nii(reorient=False, recalculate_affine=False)
+        output_img = totalsegmentator(self.nii, task="head_glands_cavities")
+        current_ornt = orientations.io_orientation(self.nii.affine)
+        target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
+        transform = orientations.ornt_transform(current_ornt, target_ornt)
+        return orientations.apply_orientation(output_img.dataobj, transform)
 
 
 class RTDOSE(DICOM):
