@@ -1,1 +1,3 @@
 *.pyc
+testLog.txt
+.gitignore
