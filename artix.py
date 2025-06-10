@@ -16,6 +16,12 @@ def salivation_flow_parsing(df):
     result = {f"{row['MEASTYP']} ({row['VISITID']})": row["MEAS_VAL"] for _, row in df.iterrows()}
     return result
 
+def mean_dose_parsing(df):
+    df = df[df["DOSISEQ"] == "Initial"]
+    keys = ["PAROH_DOSE", "PAROC_DOSE", "SMAXH_DOSE", "SMAXC_DOSE", "MOUTH_DOSE"]
+    result = {k: df[k].unique()[0] for k in keys}
+    return result
+
 CLINICAL_KEYS = {
     "age": "AGE",
     "sexe": "SEX",
@@ -27,6 +33,7 @@ CLINICAL_KEYS = {
     "progression_dt": 'PROGDT',
     "salivation_flow_parsing": salivation_flow_parsing,
     "start_treatment_dt": "RTSTDT",
+    "mean_dose": mean_dose_parsing,
 }
 
 def load_folder(path):

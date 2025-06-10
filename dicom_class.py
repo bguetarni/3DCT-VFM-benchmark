@@ -306,7 +306,7 @@ class RTSTRUCT(DICOM):
 
     def get_contours(self, structure_name):
         """
-        Return the contours in voxel space of structure
+        Return the contours in voxel space of structure, if ContourSequence not available return None
 
         Args:
             structure_name (str) name of structure as defined in the DICOM
@@ -326,14 +326,20 @@ class RTSTRUCT(DICOM):
         original_ctr = []
         for roi_contour in dcm.ROIContourSequence:
             if roi_names[roi_contour.ReferencedROINumber] == structure_name:
-                for contour in roi_contour.ContourSequence:
-                    coords = contour.ContourData
-                    # (x0, y0, z0, x1, y1, z1, ...)
-                    points = list(zip(coords[0::3], coords[1::3], coords[2::3]))
-                    original_ctr.extend(points)
-                break
 
-        return self.convert_ctr_to_voxel_space(np.asarray(original_ctr, dtype="int64"))
+                # ContourSequence is a Type 3 property, so not always existing
+                if hasattr(roi_contour, "ContourSequence"):
+                    for contour in roi_contour.ContourSequence:
+                        coords = contour.ContourData
+                        # (x0, y0, z0, x1, y1, z1, ...)
+                        points = list(zip(coords[0::3], coords[1::3], coords[2::3]))
+                        original_ctr.extend(points)
+                    break
+
+        if original_ctr:
+            return self.convert_ctr_to_voxel_space(np.asarray(original_ctr, dtype="int64"))
+        else:
+            return None
 
 
 class Patient:
@@ -351,3 +357,7 @@ class Patient:
         self.ct = ct
         self.cbct = cbct
         self.clinical = clinical
+
+    def sort_imaging(self):
+        self.ct = sorted(self.ct, key=lambda x: x.get_acquisition_date())
+        self.cbct = sorted(self.cbct, key=lambda x: x.get_acquisition_date())
