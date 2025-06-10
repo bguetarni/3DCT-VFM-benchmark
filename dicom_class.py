@@ -155,7 +155,7 @@ class Imaging(DICOM):
         """
 
         # load DICOM folder into nifti object
-        nii = dicom2nifti.convert_dicom.dicom_series_to_nifti(
+        self.nii = dicom2nifti.convert_dicom.dicom_series_to_nifti(
             original_dicom_directory=self.path, 
             output_file=None,
             reorient_nifti=False)["NII"]
@@ -163,12 +163,12 @@ class Imaging(DICOM):
         if reorient or recalculate_affine:
             if reorient:
                 # reorient volume and affine transform into (x,y,z) (right left, anterior posterior, inferior superior)
-                current_ornt = orientations.io_orientation(nii.affine)
+                current_ornt = orientations.io_orientation(self.nii.affine)
                 target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
                 transform = orientations.ornt_transform(current_ornt, target_ornt)
-                new_data = orientations.apply_orientation(nii.dataobj, transform)
+                new_data = orientations.apply_orientation(self.nii.dataobj, transform)
             else:
-                new_data = nii.dataobj
+                new_data = self.nii.dataobj
 
             if recalculate_affine:
                 # create affine transform with corrected sign and deltas
@@ -176,7 +176,7 @@ class Imaging(DICOM):
                 sorted_ = dicom2nifti.common.sort_dicoms(list(map(pydicom.dcmread, dcm_files)))
                 new_affine = create_affine(sorted_)
             else:
-                new_affine = nii.affine
+                new_affine = self.nii.affine
 
             # build nifti object
             self.nii = nibabel.Nifti1Image(new_data, new_affine)
@@ -201,17 +201,6 @@ class Imaging(DICOM):
         
         return self.nii.affine
     
-    def gather_contours(self, parotid=True, submandibular=True, use_totalsegmentator=True, tol=0.1):
-        """"
-        Gather contours from RTSTRUCT or using TotalSegmentator
-
-        Args:
-            parotid (bool) if gathering parotid glands contours
-            submandibular (bool) if gathering submandibular glands contours
-            use_totalsegmentator (bool) if True use TotalSegmentator to create missing contours
-            tol (float) threshold between RTSTRUCT contour and TotalSegmentator to considerate RTSTRUCT 
-        """
-        pass
 
 
 class CBCT(Imaging):
@@ -266,6 +255,18 @@ class CT(Imaging):
         target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
         transform = orientations.ornt_transform(current_ornt, target_ornt)
         return orientations.apply_orientation(output_img.dataobj, transform)
+    
+    def gather_contours(self, parotid=True, submandibular=True, use_totalsegmentator=True, tol=0.1):
+        """"
+        Gather contours from RTSTRUCT or using TotalSegmentator
+
+        Args:
+            parotid (bool) if gathering parotid glands contours
+            submandibular (bool) if gathering submandibular glands contours
+            use_totalsegmentator (bool) if True use TotalSegmentator to create missing contours
+            tol (float) threshold between RTSTRUCT contour and TotalSegmentator to considerate RTSTRUCT 
+        """
+        pass
 
 
 class RTDOSE(DICOM):
@@ -276,6 +277,13 @@ class RTDOSE(DICOM):
 class RTSTRUCT(DICOM):
     def __init__(self, path):
         super().__init__(path)
+
+    def get_all_OARs(self):
+        """
+        Return the name of all OARs in the DICOM file
+        """
+        dcm = pydicom.dcmread(self.get_dcm_path())
+        return [roi.ROIName for roi in dcm.StructureSetROISequence]
 
     def convert_ctr_to_voxel_space(self, original_ctr):  
         # get affine transformation matrix      

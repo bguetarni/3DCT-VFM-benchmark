@@ -1,5 +1,6 @@
 import os, pathlib
 import numpy as np
+import cv2
 from dicom2nifti.exceptions import ConversionError
 
 def get_directory_level(path1, path2):
@@ -57,3 +58,20 @@ def create_affine(sorted_dicoms):
     ##########################################################################
     
     return affine
+
+def fill_vol_ctrs(shape, ctrs):
+    """
+    Create mask of shape (*shape) anf fill contours with 1s
+
+    Args:
+        shape (tuple) shape of mask
+        ctrs (List,tuple) contours arranged as (x,y,z)
+    """
+    mask = np.zeros(shape, dtype="uint8")
+    for z in np.unique(ctrs[:,2]):
+        img = np.zeros(shape[:2], dtype="uint8")
+        zctrs = ctrs[ctrs[:,2] == z][:,:2]
+        cv2.fillPoly(img, [zctrs], 1)
+        mask[:,:,z] = img
+    
+    return mask
