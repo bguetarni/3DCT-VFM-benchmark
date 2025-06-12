@@ -261,6 +261,6 @@ def load_patient(path,
         id_=id,
         ct=list(filter(lambda i: isinstance(i, dicom_class.CT), patient_data)),
         cbct=list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
-        clinical=clinical.to_dict(),
+        clinical=clinical.to_dict('records')[0],
         clinical_measurements=clinical_measurements,
     )

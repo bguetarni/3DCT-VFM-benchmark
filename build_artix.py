@@ -29,8 +29,9 @@ if __name__ == "__main__":
     parser.add_argument('--AETOXGEN', type=str, help='path to AE_TOX_GEN csv')
     args = parser.parse_args()
 
-    patients = []
-    for i, p in tqdm.tqdm(enumerate(glob.glob(os.path.join(args.input, "*"))), ncols=50):
+    data = []
+    all_patients_to_load = glob.glob(os.path.join(args.input, "*"))
+    for i, p in tqdm.tqdm(enumerate(all_patients_to_load), total=len(all_patients_to_load), ncols=50):
         p = artix.load_patient(
             path=p,
             id_map=args.id_map,
@@ -47,17 +48,17 @@ if __name__ == "__main__":
         # set base path
         p.update_study_base_path(args.input)
 
-        patients.append(p)
+        data.append(p)
         
         if ((i+1) % args.save_freq) == 0:
             print("saving in pkl..")
             with open(args.output, "wb") as f:
-                pickle.dump(patients, f)
+                pickle.dump(data, f)
 
-    print(f"\n {len(patients)} patients loaded")
+    print(f"\n {len(data)} patients loaded")
 
     print("saving in pkl..")
     with open(args.output, "wb") as f:
-        pickle.dump(patients, f)
+        pickle.dump(data, f)
 
     print("Done")
