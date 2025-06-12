@@ -1,6 +1,7 @@
 import glob, os, tqdm, argparse, pickle
 import artix
 
+# path = r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\DICOM_ARTIX_data"
 # id_map=r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\ARTIX_ID_CORRELATION.xlsx",
 # clinical_csv=[
 #         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_PATIENT_DESCRIPTION_LTSI.csv",
@@ -14,6 +15,7 @@ if __name__ == "__main__":
     parser.add_argument('--input', type=str, required=True, help='path to ARTIX patients folder')
     parser.add_argument('--output', type=str, required=True, help='path to pickle file to save')
     parser.add_argument('--id_map', type=str, required=True, help='path to xlsx file with ID mapping correlation')
+    parser.add_argument('--save_freq', type=int, default=1, help='frequency (no of patients) to save')
 
     # clinical csv files
     parser.add_argument('--PATIENT_DESCRIPTION', type=str, required=True, help='path to PATIENT_DESCRIPTION csv')
@@ -21,24 +23,31 @@ if __name__ == "__main__":
     parser.add_argument('--SALIVATION_DATA', type=str, required=True, help='path to SALIVATION_DATA csv')
     parser.add_argument('--TREATMENT', type=str, required=True, help='path to TREATMENT csv')
     parser.add_argument('--DOSIMETRY', type=str, required=True, help='path to DOSIMETRY csv')
-    
+    parser.add_argument('--MDA', type=str, required=True, help='path to MDA csv')
+    parser.add_argument('--AETOXGEN', type=str, required=True, help='path to AE_TOX_GEN csv')
     args = parser.parse_args()
 
-    path = r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\DICOM_ARTIX_data"
     patients = []
-    for p in tqdm.tqdm(glob.glob(os.path.join(path, "*")), ncols=50):
-        patients.append(artix.load_patient(
+    for i, p in tqdm.tqdm(enumerate(glob.glob(os.path.join(args.input, "*"))), ncols=50):
+        p = artix.load_patient(
             path=p,
             id_map=args.id_map,
-            clinical_csv=[args.PATIENT_DESCRIPTION, args.EFFICACY, args.SALIVATION_DATA, args.TREATMENT, args.DOSIMETRY],
+            clinical_csv=[args.PATIENT_DESCRIPTION, args.EFFICACY, args.SALIVATION_DATA, args.TREATMENT, args.DOSIMETRY, \
+                          args.MDA, args.AETOXGEN],
             log="./log",
-            ))
+            )
         
-        # saving regularly in case
-        with open(args.output, "wb") as f:
-            pickle.dump(patients, f)
+        # set base path
+        p.update_study_base_path(args.input)
 
-    print(f"{len(patients)} patients loaded")
+        patients.append(p)
+        
+        if ((i+1) % args.save_freq) == 0:
+            print("saving in pkl..")
+            with open(args.output, "wb") as f:
+                pickle.dump(patients, f)
+
+    print(f"\n {len(patients)} patients loaded")
 
     print("saving in pkl..")
     with open(args.output, "wb") as f:

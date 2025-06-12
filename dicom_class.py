@@ -15,15 +15,29 @@ CT and RTDOSE/RTSTRUCT files can be matched based on the DICOM tag (0020,0052) F
 """
 
 class DICOM(ABC):
-    def __init__(self, path):
+    def __init__(self, path, study_base_path=None, parent=None):
         """
         Args:
             path (str) path towards folder containing DICOM files or a DICOM file itself
         """
         self.path = path
+        self.study_base_path = study_base_path
 
         # this propriety should not be used for CT/CBCT !
-        self.parent = None
+        self.parent = parent
+
+    def update_study_base_path(self, path):
+        """
+        Update base path of location of study
+
+        Args:
+            path (str) new study path
+        """
+        
+        if not(self.study_base_path is None):
+            # reconstruct path by adding study base path to current path minus previous base path
+            self.path = os.path.join(path, os.path.relpath(self.path, start=self.study_base_path))
+        self.study_base_path = path
     
     def set_parent(self, parent):
         """
@@ -221,6 +235,19 @@ class CT(Imaging):
         # RTDOSE and RTSTRUCT objects associated to this CT
         self.rtdose = rtdose
         self.rtstruct = rtstruct
+
+    def update_study_base_path(self, path):
+        """
+        Args:
+            path (str) new study path
+        """
+        super().update_study_base_path(path)
+
+        if not self.rtdose is None:
+            self.rtdose.update_study_base_path(path)
+
+        if not self.rtstruct is None:
+            self.rtstruct.update_study_base_path(path)
         
     def add_rtdose(self, rtdose, log=None):
         """
@@ -248,9 +275,9 @@ class CT(Imaging):
         self.rtstruct = rtstruct
         self.rtstruct.set_parent(self)
 
-    def apply_totalsegmentator(self):
+    def apply_totalsegmentator(self, task="head_glands_cavities"):
         self.load_nii(reorient=False, recalculate_affine=False)
-        output_img = totalsegmentator(self.nii, task="head_glands_cavities")
+        output_img = totalsegmentator(self.nii, task=task)
         current_ornt = orientations.io_orientation(self.nii.affine)
         target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
         transform = orientations.ornt_transform(current_ornt, target_ornt)
@@ -266,7 +293,7 @@ class CT(Imaging):
             use_totalsegmentator (bool) if True use TotalSegmentator to create missing contours
             tol (float) threshold between RTSTRUCT contour and TotalSegmentator to considerate RTSTRUCT 
         """
-        pass
+        pass #TODO
 
 
 class RTDOSE(DICOM):
@@ -343,7 +370,7 @@ class RTSTRUCT(DICOM):
 
 
 class Patient:
-    def __init__(self, id_, ct=[], cbct=[], clinical={}):
+    def __init__(self, id_, ct=[], cbct=[], clinical={}, clinical_measurements=[]):
         """
         Create a RT patient with imaging and clinical data
 
@@ -352,12 +379,21 @@ class Patient:
             ct (List) list of CT imaging (including dose and struct)
             cbct (List) list of CBCT imaging
             clinical (dict) dictionnary containing clinical data of patient (age, sexe, ...)
+            clinical_measurements (List) list containing clinical measurements (SSF, DOSIMETRY, MDASI, ...)
         """
         self.id = id_
         self.ct = ct
         self.cbct = cbct
         self.clinical = clinical
+        self.clinical_measurements = clinical_measurements
 
     def sort_imaging(self):
         self.ct = sorted(self.ct, key=lambda x: x.get_acquisition_date())
         self.cbct = sorted(self.cbct, key=lambda x: x.get_acquisition_date())
+
+    def update_study_base_path(self, study_base_path):
+        for ct in self.ct:
+            ct.update_study_base_path(study_base_path)
+
+        for cbct in self.cbct:
+            cbct.update_study_base_path(study_base_path)

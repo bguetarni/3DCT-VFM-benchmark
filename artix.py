@@ -11,30 +11,110 @@ import dicom_utils
 # CT vs CBCT: (0008, 0070) Manufacturer of CBCT is 'ELEKTA'
 # threshold for xerostomia is <500 mg/min
 
-def salivation_flow_parsing(df):
-    df = df[df["MEASTYP"] == "Stimulated salivation flow"]
-    result = {f"{row['MEASTYP']} ({row['VISITID']})": row["MEAS_VAL"] for _, row in df.iterrows()}
+def generic_parsing(df, type, visitID_key, value_key=None, filter_pairs=None, sample_keys=None, sample_is_column=True):
+    """
+    Generic parsing of clinical CSV
+
+    Args:
+        df (pandas.DataFrame) CSV to parse
+        type (str) the name of type of measurments [SSF, DOSIMETRY, ...]
+        visitID_key (str) name of the column of visit ID
+        value_key (str) name of the column of the measurement value
+        filter_pairs (str) list of pairs of column names and values to filter the table (each column can have multiple values)
+        sample_keys (List[str], str) names of columns that  are the sample or of the column that contain the sample name
+        sample_is_column (bool) if True consider that sample_keys is name of columns that contain the value, 
+                else name of the columns that contain the sample names
+    """
+    if not filter_pairs is None:
+        for k, v in filter_pairs:
+            if not isinstance(v, list):
+                v = [v]
+
+            # filter the table
+            df = df[df[k].isin(v)]
+    
+    # for each row populate clinical measurements data
+    result = []
+    for _, row in df.iterrows():
+        if sample_keys is None:
+            result.append({"type": type, "value": row[value_key], "visitID": row[visitID_key]})
+        else:
+            # for each sample add data and name
+            if sample_is_column:
+                # sample_keys are the name of the samples columns
+                for k in sample_keys:
+                    result.append({"type": type, "value": row[k], "visitID": row[visitID_key], "sample": k})
+            else:
+                # sample_keys is the column containing samples names
+                result.append({"type": type, "value": row[value_key], "visitID": row[visitID_key], "sample": row[sample_keys]})
     return result
 
-def mean_dose_parsing(df):
-    df = df[df["DOSISEQ"] == "Initial"]
-    keys = ["PAROH_DOSE", "PAROC_DOSE", "SMAXH_DOSE", "SMAXC_DOSE", "MOUTH_DOSE"]
-    result = {k: df[k].unique()[0] for k in keys}
-    return result
+def salivation_parsing(df):
+    return generic_parsing(df, 
+                           filter_pairs=[("MEASTYP", ["Stimulated salivation flow"])],
+                           type="SSF",
+                           visitID_key="VISITID",
+                           value_key="MEAS_VAL")
 
-CLINICAL_KEYS = {
-    "age": "AGE",
-    "sexe": "SEX",
-    "hpv": "ST_HPV",
-    "arm": "ACTARMCD",
-    "inclusion_dt": "INCDT",
-    "randomization_dt": "RANDT",
-    "is_prog_recc": 'PROG',
-    "progression_dt": 'PROGDT',
-    "salivation_flow_parsing": salivation_flow_parsing,
-    "start_treatment_dt": "RTSTDT",
-    "mean_dose": mean_dose_parsing,
-}
+def dosimetry_parsing(df):
+    return generic_parsing(df, 
+                           type="DOSIMETRY",
+                           visitID_key="DOSISEQ",
+                           sample_keys=["PAROH_DOSE", "PAROC_DOSE", "SMAXH_DOSE", "SMAXC_DOSE", "MOUTH_DOSE"],
+                           sample_is_column=True)
+
+def mda_parsing(df):
+    return generic_parsing(df, 
+                           type="MDA",
+                           visitID_key="VISITID",
+                           sample_keys=['Q1','Q2','Q3','Q4','Q5','Q6','Q7','Q8','Q9',
+                                        'Q10','Q11','Q12','Q13','Q14','Q15','Q16','Q17','Q18','Q19',
+                                        'Q20','Q21','Q22','Q23','Q24','Q25','Q26','Q27','Q28'],
+                           sample_is_column=True)
+
+def aetox_parsing(df):
+    return generic_parsing(df,
+                           filter_pairs=[("AETERM", ["DYSPHAGIE", "XEROSTOMIE"])],
+                           type="AE",
+                           visitID_key="EPOC",
+                           value_key="AEGRMX",
+                           sample_keys="AETERM",
+                           sample_is_column=False)
+
+
+# def salivation_parsing(df):
+#     df = df[df["MEASTYP"] == "Stimulated salivation flow"]
+#     result = dict()
+#     for _, row in df.iterrows():
+#         result.update({"type": "SSF", "visitID": row["VISITID"], "value": row["MEAS_VAL"]})
+#     return result
+
+# def dosimetry_parsing(df):
+#     keys = ["PAROH_DOSE", "PAROC_DOSE", "SMAXH_DOSE", "SMAXC_DOSE", "MOUTH_DOSE"]
+#     result = dict()
+#     for _, row in df.iterrows():
+#         for k in keys:
+#             result.update({"type": "DOSIMETRY", "visitID": row["DOSISEQ"], "sample": k, "value": row[k]})
+#     return result
+
+# def mda_parsing(df):
+#     keys = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 
+#             'Q11', 'Q12', 'Q13', 'Q14', 'Q15', 'Q16', 'Q17', 'Q18', 'Q19', 
+#             'Q20', 'Q21', 'Q22', 'Q23', 'Q24', 'Q25', 'Q26', 'Q27', 'Q28']
+#     result = dict()
+#     for _, row in df.iterrows():
+#         for k in keys:
+#             result.update({"type": "MDA", "visitID": row["VISITID"], "sample": k, "value": row[k]})
+#     return result
+
+# def aetox_parsing(df):
+#     keys = ["DYSPHAGIE", "XEROSTOMIE"]
+#     df = df[df["AETERM"].isin(keys)]
+#     result = dict()
+#     for _, row in df.iterrows():
+#         result.update({"type": "AE", "visitID": row["EPOC"], "sample": row["AETERM"], "value": row["AEGRMX"]})
+#     return result
+
 
 def load_folder(path):
     """
@@ -73,14 +153,29 @@ def load_folder(path):
 
     return data
 
-def load_patient(path, id_map, clinical_csv=None, log=None):
+def load_patient(path, 
+                 id_map, 
+                 PATIENT_DESCRIPTION_csv=None,
+                 EFFICACY_csv=None,
+                 SALIVATION_DATA_csv=None,
+                 TREATMENT_csv=None,
+                 DOSIMETRY_csv=None,
+                 MDA_csv=None,
+                 AETOXGEN_csv=None,
+                 log=None):
     """
     Load a patient folder and return images with dose and rtplan
 
     Args:
         path (str) path to patient folder
         id_map (str) path to CSV mapping folder IDs to clinical data IDs
-        clinical_csv (List[str]) list of path to clinical data CSV file
+        PATIENT_DESCRIPTION_csv (str) path to PATIENT_DESCRIPTION csv
+        EFFICACY_csv (str) path EFFICACY to csv
+        SALIVATION_DATA_csv (str) path SALIVATION_DATA to csv
+        TREATMENT_csv (str) path TREATMENT to csv
+        DOSIMETRY_csv (str) path DOSIMETRY to csv
+        MDA_csv (str) path MDA to csv
+        AETOXGEN_csv (str) path AETOXGEN to csv
         log (str) path to file to log warnings and errors
 
     return Patient object
@@ -139,54 +234,53 @@ def load_patient(path, id_map, clinical_csv=None, log=None):
             log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
 
     # load clinical data
-    patient_clinical = dict()
-    if not clinical_csv is None:
+    clinical = None
+    for sub_df in (PATIENT_DESCRIPTION_csv, EFFICACY_csv, TREATMENT_csv):
+        if sub_df is None:
+            continue
 
-        # load and merge all clinical CSV files
-        df = None
-        for p in clinical_csv:
-            sub_df = pandas.read_csv(p, sep=";", encoding='ISO-8859-1')
-            if df is None:
-                df = sub_df
-            else:
-                # merge DataFrames based on common columns
-                common_columns = set(df.columns).intersection(set(sub_df.columns))
-                df = pandas.merge(df, sub_df, on=list(common_columns), how='inner')
+        sub_df = pandas.read_csv(sub_df, sep=";", encoding='ISO-8859-1')
         
         # convert USUBJID
-        df["USUBJID"] = df["USUBJID"].astype(int)
+        sub_df["USUBJID"] = sub_df["USUBJID"].astype(int)
 
-        # if patient ID available gather clinical data
-        if not id in df["USUBJID"].unique() and log is None:
-            log.warning(f"WARNING: patient folder id {id} not found in clinical data")
+        # check patient is in CSV data
+        if not id in sub_df["USUBJID"].unique():
+            if not log is None:
+                log.warning(f"WARNING: patient folder id {id} not found in clinical data")
+            else:
+                print(f"WARNING: patient folder id {id} not found in clinical data")
+            
+            continue
+
+        sub_df = sub_df[sub_df["USUBJID"] == id]
+
+        if clinical is None:
+            clinical = sub_df
         else:
-            df = df[df["USUBJID"] == id]
+            # merge DataFrames based on common columns
+            common_columns = set(clinical.columns).intersection(set(sub_df.columns))
+            clinical = pandas.merge(clinical, sub_df, on=list(common_columns), how='inner')
 
-            # populate patient clinical data based on CLINICAL_KEYS
-            for k, v in CLINICAL_KEYS.items():
-                if callable(v):
-                    patient_clinical.update(v(df))
-                else:
-                    patient_clinical.update({k: df[v].unique()[0]})
+    # load clinical measurements
+    clinical_measurements = []
+    for sub_df, fn in [
+        (SALIVATION_DATA_csv, salivation_parsing),
+        (DOSIMETRY_csv, dosimetry_parsing),
+        (MDA_csv, mda_parsing),
+        (AETOXGEN_csv, aetox_parsing),
+    ]:
+        if sub_df is None:
+            continue
+
+        sub_df = pandas.read_csv(sub_df, sep=";", encoding='ISO-8859-1')
+        clinical_measurements.extend(fn(sub_df))
+
     
     return dicom_class.Patient(
         id_=id,
         ct=list(filter(lambda i: isinstance(i, dicom_class.CT), patient_data)),
         cbct=list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
-        clinical=patient_clinical,
+        clinical=clinical.to_dict(),
+        clinical_measurements=clinical_measurements,
     )
-
-
-class ARTIX:
-    def __init__(self, path):
-        self.path = path
-        self.patients = []
-
-    def add_patient(self, p):
-        self.patients.append(p)
-
-    def get_relative_path(self, subpath):
-        """
-        Return relative path to this dataset
-        """
-        return os.path.relpath(self.path, start=subpath)
