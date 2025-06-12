@@ -9,6 +9,8 @@ import artix
 #         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_SALIVATION_DATA_LTSI.csv",
 #         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_TREATMENT_LTSI.csv",
 #         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_DOSIMETRY_LTSI.csv",
+#         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_MDA_LTSI.csv"
+#         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_AE_TOX_GEN_LTSI.csv"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -18,13 +20,13 @@ if __name__ == "__main__":
     parser.add_argument('--save_freq', type=int, default=1, help='frequency (no of patients) to save')
 
     # clinical csv files
-    parser.add_argument('--PATIENT_DESCRIPTION', type=str, required=True, help='path to PATIENT_DESCRIPTION csv')
-    parser.add_argument('--EFFICACY', type=str, required=True, help='path to EFFICACY csv')
-    parser.add_argument('--SALIVATION_DATA', type=str, required=True, help='path to SALIVATION_DATA csv')
-    parser.add_argument('--TREATMENT', type=str, required=True, help='path to TREATMENT csv')
-    parser.add_argument('--DOSIMETRY', type=str, required=True, help='path to DOSIMETRY csv')
-    parser.add_argument('--MDA', type=str, required=True, help='path to MDA csv')
-    parser.add_argument('--AETOXGEN', type=str, required=True, help='path to AE_TOX_GEN csv')
+    parser.add_argument('--PATIENT_DESCRIPTION', type=str, help='path to PATIENT_DESCRIPTION csv')
+    parser.add_argument('--EFFICACY', type=str, help='path to EFFICACY csv')
+    parser.add_argument('--SALIVATION_DATA', type=str, help='path to SALIVATION_DATA csv')
+    parser.add_argument('--TREATMENT', type=str, help='path to TREATMENT csv')
+    parser.add_argument('--DOSIMETRY', type=str, help='path to DOSIMETRY csv')
+    parser.add_argument('--MDA', type=str, help='path to MDA csv')
+    parser.add_argument('--AETOXGEN', type=str, help='path to AE_TOX_GEN csv')
     args = parser.parse_args()
 
     patients = []
@@ -32,8 +34,13 @@ if __name__ == "__main__":
         p = artix.load_patient(
             path=p,
             id_map=args.id_map,
-            clinical_csv=[args.PATIENT_DESCRIPTION, args.EFFICACY, args.SALIVATION_DATA, args.TREATMENT, args.DOSIMETRY, \
-                          args.MDA, args.AETOXGEN],
+            PATIENT_DESCRIPTION_csv=args.PATIENT_DESCRIPTION,
+            EFFICACY_csv=args.EFFICACY,
+            SALIVATION_DATA_csv=args.SALIVATION_DATA,
+            TREATMENT_csv=args.TREATMENT,
+            DOSIMETRY_csv=args.DOSIMETRY,
+            MDA_csv=args.MDA,
+            AETOXGEN_csv=args.AETOXGEN,
             log="./log",
             )
         

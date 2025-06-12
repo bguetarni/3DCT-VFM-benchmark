@@ -9,7 +9,7 @@ import dicom_utils
 # (0008, 0060) Modality
 # 'CT', 'RTSTRUCT', 'RTDOSE'
 # CT vs CBCT: (0008, 0070) Manufacturer of CBCT is 'ELEKTA'
-# threshold for xerostomia is <500 mg/min
+# threshold for xerostomia is SSF<500 mg/min
 
 def generic_parsing(df, type, visitID_key, value_key=None, filter_pairs=None, sample_keys=None, sample_is_column=True):
     """
@@ -25,6 +25,14 @@ def generic_parsing(df, type, visitID_key, value_key=None, filter_pairs=None, sa
         sample_is_column (bool) if True consider that sample_keys is name of columns that contain the value, 
                 else name of the columns that contain the sample names
     """
+
+    if sample_is_column:
+        assert(isinstance(sample_keys, list), "if 'sample_is_column' is True then 'sample_keys' must be a list of column names")
+
+    if not sample_is_column:
+        assert(isinstance(sample_keys, str), "if 'sample_is_column' is False, then 'sample_keys' must be a string as the name of the column containing the sample names")
+        assert(not(value_key is None), "if 'sample_is_column' is False, then 'value_key' must be provided")
+
     if not filter_pairs is None:
         for k, v in filter_pairs:
             if not isinstance(v, list):
@@ -80,7 +88,6 @@ def aetox_parsing(df):
                            value_key="AEGRMX",
                            sample_keys="AETERM",
                            sample_is_column=False)
-
 
 def load_folder(path):
     """
@@ -207,19 +214,15 @@ def load_patient(path,
 
         sub_df = pandas.read_csv(sub_df, sep=";", encoding='ISO-8859-1')
         
-        # convert USUBJID
-        sub_df["USUBJID"] = sub_df["USUBJID"].astype(int)
-
+        # convert USUBJID and filter data for patient id only
         # check patient is in CSV data
-        if not id in sub_df["USUBJID"].unique():
+        sub_df = sub_df[sub_df["USUBJID"].astype(int) == id]
+        if len(sub_df) == 0:
             if not log is None:
                 log.warning(f"WARNING: patient folder id {id} not found in clinical data")
             else:
                 print(f"WARNING: patient folder id {id} not found in clinical data")
-            
             continue
-
-        sub_df = sub_df[sub_df["USUBJID"] == id]
 
         if clinical is None:
             clinical = sub_df
@@ -240,6 +243,17 @@ def load_patient(path,
             continue
 
         sub_df = pandas.read_csv(sub_df, sep=";", encoding='ISO-8859-1')
+
+        # convert USUBJID and filter data for patient id only
+        # check patient is in CSV data
+        sub_df = sub_df[sub_df["USUBJID"].astype(int) == id]
+        if len(sub_df) == 0:
+            if not log is None:
+                log.warning(f"WARNING: patient folder id {id} not found in clinical data")
+            else:
+                print(f"WARNING: patient folder id {id} not found in clinical data")
+            continue
+
         clinical_measurements.extend(fn(sub_df))
 
     
