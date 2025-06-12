@@ -26,12 +26,12 @@ def generic_parsing(df, type, visitID_key, value_key=None, filter_pairs=None, sa
                 else name of the columns that contain the sample names
     """
 
-    if sample_is_column:
-        assert(isinstance(sample_keys, list), "if 'sample_is_column' is True then 'sample_keys' must be a list of column names")
+    if sample_is_column and not(sample_keys is None):
+        assert isinstance(sample_keys, list), "if 'sample_is_column' is True then 'sample_keys' must be a list of column names"
 
-    if not sample_is_column:
-        assert(isinstance(sample_keys, str), "if 'sample_is_column' is False, then 'sample_keys' must be a string as the name of the column containing the sample names")
-        assert(not(value_key is None), "if 'sample_is_column' is False, then 'value_key' must be provided")
+    if not(sample_is_column) and not(sample_keys is None):
+        assert isinstance(sample_keys, str), "if 'sample_is_column' is False, then 'sample_keys' must be a string as the name of the column containing the sample names"
+        assert not(value_key is None), "if 'sample_is_column' is False, then 'value_key' must be provided"
 
     if not filter_pairs is None:
         for k, v in filter_pairs:
