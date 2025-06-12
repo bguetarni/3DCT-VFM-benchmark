@@ -82,40 +82,6 @@ def aetox_parsing(df):
                            sample_is_column=False)
 
 
-# def salivation_parsing(df):
-#     df = df[df["MEASTYP"] == "Stimulated salivation flow"]
-#     result = dict()
-#     for _, row in df.iterrows():
-#         result.update({"type": "SSF", "visitID": row["VISITID"], "value": row["MEAS_VAL"]})
-#     return result
-
-# def dosimetry_parsing(df):
-#     keys = ["PAROH_DOSE", "PAROC_DOSE", "SMAXH_DOSE", "SMAXC_DOSE", "MOUTH_DOSE"]
-#     result = dict()
-#     for _, row in df.iterrows():
-#         for k in keys:
-#             result.update({"type": "DOSIMETRY", "visitID": row["DOSISEQ"], "sample": k, "value": row[k]})
-#     return result
-
-# def mda_parsing(df):
-#     keys = ['Q1', 'Q2', 'Q3', 'Q4', 'Q5', 'Q6', 'Q7', 'Q8', 'Q9', 'Q10', 
-#             'Q11', 'Q12', 'Q13', 'Q14', 'Q15', 'Q16', 'Q17', 'Q18', 'Q19', 
-#             'Q20', 'Q21', 'Q22', 'Q23', 'Q24', 'Q25', 'Q26', 'Q27', 'Q28']
-#     result = dict()
-#     for _, row in df.iterrows():
-#         for k in keys:
-#             result.update({"type": "MDA", "visitID": row["VISITID"], "sample": k, "value": row[k]})
-#     return result
-
-# def aetox_parsing(df):
-#     keys = ["DYSPHAGIE", "XEROSTOMIE"]
-#     df = df[df["AETERM"].isin(keys)]
-#     result = dict()
-#     for _, row in df.iterrows():
-#         result.update({"type": "AE", "visitID": row["EPOC"], "sample": row["AETERM"], "value": row["AEGRMX"]})
-#     return result
-
-
 def load_folder(path):
     """
     Load a folder which could be anything (collection of imaging, CT, RTDOSE, ...)
