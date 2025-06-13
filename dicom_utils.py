@@ -1,6 +1,8 @@
 import os, pathlib
 import numpy as np
 import cv2
+from scipy.ndimage import binary_fill_holes
+from skimage.draw import polygon
 from dicom2nifti.exceptions import ConversionError
 
 def get_directory_level(path1, path2):
@@ -50,9 +52,9 @@ def create_affine(sorted_dicoms):
     # signs of first and second row are inverted (from - to +) except for step
     # delta_r and delta_c are inverted
     affine = np.array(
-        [[image_orient1[0] * delta_r, image_orient2[0] * delta_c, -step[0], image_pos[0]],
-         [image_orient1[1] * delta_r, image_orient2[1] * delta_c, -step[1], image_pos[1]],
-         [image_orient1[2] * delta_r, image_orient2[2] * delta_c, step[2], image_pos[2]],
+        [[image_orient1[0] * delta_c, image_orient2[0] * delta_r, -step[0], image_pos[0]],
+         [image_orient1[1] * delta_c, image_orient2[1] * delta_r, -step[1], image_pos[1]],
+         [image_orient1[2] * delta_c, image_orient2[2] * delta_r, step[2], image_pos[2]],
          [0, 0, 0, 1]]
     )
     ##########################################################################
@@ -69,12 +71,16 @@ def fill_vol_ctrs(shape, ctrs):
     """
     mask = np.zeros(shape, dtype="uint8")
     for z in np.unique(ctrs[:,2]):
+        # check for boundaries
+        if z >= mask.shape[0]:
+            continue
         img = np.zeros(shape[:2], dtype="uint8")
         zctrs = ctrs[ctrs[:,2] == z][:,:2]
         cv2.fillPoly(img, [zctrs], 1)
         mask[:,:,z] = img
     
     return mask
+
 
 def is_CT(dcm, use_exposure_time=True):
     """
@@ -103,3 +109,27 @@ def is_CT(dcm, use_exposure_time=True):
             return False
     except (PermissionError, AttributeError, TypeError):
         return False
+
+def convert_ctr_to_voxel_space(affine, points):
+    """
+    Convert world space ccordinates into voxel space coordinates based on inverse transformation
+
+    Args:
+        affine (numpy.ndarray) affine transformation from voxel to world space
+        points (numpy.ndarray) points coordinates to convert (N,3)
+    """
+
+    # inverse affine transformation
+    inv_affine = np.linalg.inv(affine)
+
+    # homogeneous coordinates
+    points = np.hstack((points, np.ones((points.shape[0], 1))))
+
+    # apply affine transformation
+    voxel_ctr = inv_affine @ points.transpose()
+
+    # reorder axes
+    voxel_ctr = voxel_ctr.transpose().astype("int64")
+
+    # drop homogeneous coordinate
+    return voxel_ctr[:,:3]

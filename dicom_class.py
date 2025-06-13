@@ -8,7 +8,7 @@ import nibabel
 from nibabel import orientations
 from totalsegmentator.python_api import totalsegmentator
 
-from dicom_utils import create_affine, fill_vol_ctrs
+from dicom_utils import create_affine, fill_vol_ctrs, convert_ctr_to_voxel_space
 
 """
 CT and RTDOSE/RTSTRUCT files can be matched based on the DICOM tag (0020,0052) Frame of Reference UID
@@ -214,7 +214,6 @@ class Imaging(DICOM):
             self.load_nii()
         
         return self.nii.affine
-    
 
 
 class CBCT(Imaging):
@@ -289,9 +288,10 @@ class CT(Imaging):
         transform = orientations.ornt_transform(current_ornt, target_ornt)
         return orientations.apply_orientation(output_img.dataobj, transform)
     
-    def gather_contours(self, parotid=True, submandibular=True, use_totalsegmentator=True, tol=0.1):
+    def gather_contours(self, parotid=True, submandibular=True, mandibule=True, use_totalsegmentator=True, tol=0.1):
         """"
         Gather contours from RTSTRUCT or using TotalSegmentator
+        Return dict containing OARs contours with name
 
         Args:
             parotid (bool) if gathering parotid glands contours
@@ -305,7 +305,40 @@ class CT(Imaging):
 class RTDOSE(DICOM):
     def __init__(self, path):
         super().__init__(path)
+    
+    def get_voxel_array(self):
+        """
+        Return dose voxel data
+        """
 
+        dcm = pydicom.dcmread(self.get_dcm_path())
+        return np.moveaxis(dcm.pixel_array, 0, -1)
+    
+    def get_structure_mask(self, name):
+        """
+        Return mask of contour on dose volume with shape (H,W,C)
+
+        Args:
+            name (str) name of contour as found in RTDOSE
+        """
+
+        # load contours of structure
+        contours = self.parent.rtstruct.get_contours(name, convert_to_voxel=False)
+
+        # get DICOM metadata
+        ds = pydicom.dcmread(self.get_dcm_path())
+        dose_origin = np.array(ds.ImagePositionPatient, dtype=np.float32)
+        dose_spacing = np.array([ds.PixelSpacing[0], ds.PixelSpacing[1], ds.GridFrameOffsetVector[1] - ds.GridFrameOffsetVector[0]], dtype=np.float32)
+        dose_orientation = np.array(ds.ImageOrientationPatient, dtype=np.float32).reshape(2, 3)
+        orientation_matrix = np.vstack([dose_orientation, np.cross(dose_orientation[0], dose_orientation[1])])
+        inverse_orientation = np.linalg.inv(orientation_matrix)
+
+        contours = np.array(contours).reshape(-1, 3)
+        voxel_coords = (contours - dose_origin) @ inverse_orientation.T / dose_spacing
+        voxel_coords = np.round(voxel_coords).astype(int)
+
+        mask = fill_vol_ctrs(ds.pixel_array.shape, voxel_coords)
+        return np.moveaxis(mask, 0, -1)
 
 class RTSTRUCT(DICOM):
     def __init__(self, path):
@@ -318,31 +351,13 @@ class RTSTRUCT(DICOM):
         dcm = pydicom.dcmread(self.get_dcm_path())
         return [roi.ROIName for roi in dcm.StructureSetROISequence]
 
-    def convert_ctr_to_voxel_space(self, original_ctr):  
-        # get affine transformation matrix      
-        affine = self.parent.get_affine()
-        
-        # inverse affine transformation
-        inv_affine = np.linalg.inv(affine)
-
-        # homogeneous coordinates
-        original_ctr = np.hstack((original_ctr, np.ones((original_ctr.shape[0], 1))))
-
-        # apply affine transformation
-        voxel_ctr = inv_affine @ original_ctr.transpose()
-
-        # reorder axes
-        voxel_ctr = voxel_ctr.transpose().astype("int64")
-
-        # drop homogeneous coordinate
-        return voxel_ctr[:,:3]
-
-    def get_contours(self, structure_name):
+    def get_contours(self, structure_name, convert_to_voxel=True):
         """
-        Return the contours in voxel space of structure, if ContourSequence not available return None
+        Return the contours of structure, if ContourSequence not available return None
 
         Args:
             structure_name (str) name of structure as defined in the DICOM
+            convert_to_voxel (bool) if TRUE convert coordinates into voxel space
         """
 
         if self.parent is None:
@@ -370,7 +385,11 @@ class RTSTRUCT(DICOM):
                     break
 
         if original_ctr:
-            return self.convert_ctr_to_voxel_space(np.asarray(original_ctr, dtype="int64"))
+            original_ctr = np.asarray(original_ctr, dtype="int64")
+            if convert_to_voxel:
+                original_ctr = convert_ctr_to_voxel_space(self.parent.get_affine(), original_ctr)
+            
+            return original_ctr
         else:
             return None
         
