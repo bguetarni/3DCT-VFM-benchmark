@@ -61,23 +61,36 @@ def create_affine(sorted_dicoms):
     
     return affine
 
-def fill_vol_ctrs(shape, ctrs):
+def fill_vol_ctrs(shape, ctrs, fill_holes=True):
     """
     Create mask of shape (*shape) anf fill contours with 1s
 
     Args:
         shape (tuple) shape of mask
         ctrs (List,tuple) contours arranged as (x,y,z)
+        fill_holes (bool) if True, fill holes in final mask; set to False for faster run
     """
-    mask = np.zeros(shape, dtype="uint8")
-    for z in np.unique(ctrs[:,2]):
+    mask = np.zeros(shape, dtype=bool)
+    for z in np.unique(ctrs[:, 2]):
+
         # check for boundaries
         if z >= mask.shape[0]:
             continue
-        img = np.zeros(shape[:2], dtype="uint8")
-        zctrs = ctrs[ctrs[:,2] == z][:,:2]
-        cv2.fillPoly(img, [zctrs], 1)
-        mask[:,:,z] = img
+        slice_points = ctrs[ctrs[:, 2] == z]
+
+        # check at least 3 points for polygon
+        if slice_points.shape[0] < 3:
+            continue
+
+        # fill polygon
+        rr, cc = polygon(slice_points[:, 1], slice_points[:, 0], shape=mask.shape[1:3])
+        mask[z, rr, cc] = 1
+
+    # fill holes in the mask
+    # deactivate to run faster
+    if fill_holes:
+        for z in range(mask.shape[0]):
+            mask[z] = binary_fill_holes(mask[z])
     
     return mask
 
