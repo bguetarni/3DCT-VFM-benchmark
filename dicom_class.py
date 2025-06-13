@@ -8,7 +8,7 @@ import nibabel
 from nibabel import orientations
 from totalsegmentator.python_api import totalsegmentator
 
-from dicom_utils import create_affine
+from dicom_utils import create_affine, fill_vol_ctrs
 
 """
 CT and RTDOSE/RTSTRUCT files can be matched based on the DICOM tag (0020,0052) Frame of Reference UID
@@ -236,6 +236,12 @@ class CT(Imaging):
         self.rtdose = rtdose
         self.rtstruct = rtstruct
 
+        if not(self.rtstruct is None):
+            self.rtstruct.set_parent(self)
+
+        if not(self.rtdose is None):
+            self.rtdose.set_parent(self)
+
     def update_study_base_path(self, path):
         """
         Args:
@@ -367,6 +373,16 @@ class RTSTRUCT(DICOM):
             return self.convert_ctr_to_voxel_space(np.asarray(original_ctr, dtype="int64"))
         else:
             return None
+        
+    def get_structure_mask(self, structure_name):
+        """
+        Return the volume mask of an OAR
+
+        Args:
+            structure_name (str) name of structure as defined in the DICOM
+        """
+        ctrs = self.get_contours(structure_name)
+        return fill_vol_ctrs(self.parent.nii.shape, ctrs)
 
 
 class Patient:
