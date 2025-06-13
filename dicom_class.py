@@ -312,18 +312,24 @@ class RTDOSE(DICOM):
         """
 
         dcm = pydicom.dcmread(self.get_dcm_path())
-        return np.moveaxis(dcm.pixel_array, 0, -1)
+
+        # raw DICOM voxel values must be scaled by DoseGridScaling to obtain dose values
+        # no need to do this for CT/CBCT because dicom2nifti automatically scales the values when converting to nifti
+        return np.moveaxis(dcm.pixel_array * dcm.DoseGridScaling, 0, -1)
     
     def get_structure_mask(self, name):
         """
         Return mask of contour on dose volume with shape (H,W,C)
 
         Args:
-            name (str) name of contour as found in RTDOSE
+            name (str) name of contour as found in RTSTRUCT
         """
+        assert not(self.parent is None), f"parent must be initialized first to compute mask of OAR {name}"
+        assert not(self.parent.rtstruct is None), f"parent.rtstruct must be initialized first to compute mask of OAR {name}"
 
         # load contours of structure
         contours = self.parent.rtstruct.get_contours(name, convert_to_voxel=False)
+        contours = np.array(contours).reshape(-1, 3)
 
         # get DICOM metadata
         ds = pydicom.dcmread(self.get_dcm_path())
@@ -331,14 +337,26 @@ class RTDOSE(DICOM):
         dose_spacing = np.array([ds.PixelSpacing[0], ds.PixelSpacing[1], ds.GridFrameOffsetVector[1] - ds.GridFrameOffsetVector[0]], dtype=np.float32)
         dose_orientation = np.array(ds.ImageOrientationPatient, dtype=np.float32).reshape(2, 3)
         orientation_matrix = np.vstack([dose_orientation, np.cross(dose_orientation[0], dose_orientation[1])])
-        inverse_orientation = np.linalg.inv(orientation_matrix)
 
-        contours = np.array(contours).reshape(-1, 3)
+        # convert contour to voxel space
+        inverse_orientation = np.linalg.inv(orientation_matrix)
         voxel_coords = (contours - dose_origin) @ inverse_orientation.T / dose_spacing
         voxel_coords = np.round(voxel_coords).astype(int)
 
+        # create mask with filled contours
         mask = fill_vol_ctrs(ds.pixel_array.shape, voxel_coords)
         return np.moveaxis(mask, 0, -1)
+    
+    def get_mean_dose_structure(self, name):
+        """
+        Return the mean dose to the OAR
+
+        Args:
+            name (str) name of contour as found in RTSTRUCT
+        """
+        assert not(self.parent is None), f"parent must be initialized first to compute mean dose of OAR {name}"
+        assert not(self.parent.rtstruct is None), f"parent.rtstruct must be initialized first to compute mean dose of OAR {name}"
+        return self.get_voxel_array()[self.get_structure_mask(name)].mean()
 
 class RTSTRUCT(DICOM):
     def __init__(self, path):
@@ -351,12 +369,12 @@ class RTSTRUCT(DICOM):
         dcm = pydicom.dcmread(self.get_dcm_path())
         return [roi.ROIName for roi in dcm.StructureSetROISequence]
 
-    def get_contours(self, structure_name, convert_to_voxel=True):
+    def get_contours(self, name, convert_to_voxel=True):
         """
         Return the contours of structure, if ContourSequence not available return None
 
         Args:
-            structure_name (str) name of structure as defined in the DICOM
+            name (str) name of structure as defined in the DICOM
             convert_to_voxel (bool) if TRUE convert coordinates into voxel space
         """
 
@@ -373,7 +391,7 @@ class RTSTRUCT(DICOM):
         # gather structure coordinates
         original_ctr = []
         for roi_contour in dcm.ROIContourSequence:
-            if roi_names[roi_contour.ReferencedROINumber] == structure_name:
+            if roi_names[roi_contour.ReferencedROINumber] == name:
 
                 # ContourSequence is a Type 3 property, so not always existing
                 if hasattr(roi_contour, "ContourSequence"):
@@ -393,14 +411,14 @@ class RTSTRUCT(DICOM):
         else:
             return None
         
-    def get_structure_mask(self, structure_name):
+    def get_structure_mask(self, name):
         """
         Return the volume mask of an OAR
 
         Args:
-            structure_name (str) name of structure as defined in the DICOM
+            name (str) name of structure as defined in the DICOM
         """
-        ctrs = self.get_contours(structure_name)
+        ctrs = self.get_contours(name)
         return fill_vol_ctrs(self.parent.nii.shape, ctrs)
 
 

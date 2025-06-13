@@ -1,6 +1,5 @@
 import os, pathlib
 import numpy as np
-import cv2
 from scipy.ndimage import binary_fill_holes
 from skimage.draw import polygon
 from dicom2nifti.exceptions import ConversionError
@@ -76,6 +75,8 @@ def fill_vol_ctrs(shape, ctrs, fill_holes=True):
         # check for boundaries
         if z >= mask.shape[0]:
             continue
+        
+        # select point on place
         slice_points = ctrs[ctrs[:, 2] == z]
 
         # check at least 3 points for polygon
