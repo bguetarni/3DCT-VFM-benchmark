@@ -75,3 +75,31 @@ def fill_vol_ctrs(shape, ctrs):
         mask[:,:,z] = img
     
     return mask
+
+def is_CT(dcm, use_exposure_time=True):
+    """
+    Return True if DICOM dataset is CT, False otherwise (e.g., CBCT)
+
+    Args:
+        dcm (pydicom.Dataset) DICOM object to test
+        use_exposure_time (bool) if True use Exposure Time, else use Manufacturer
+    """
+    try:
+        if dcm.get((0x0008, 0x0060)).value == "CT":
+            if use_exposure_time:
+                try:
+                    exposure_t = dcm.get((0x0018, 0x1150)).value
+                except (AttributeError, TypeError):
+                    xray_curr = dcm.get((0x0018, 0x1151)).value
+                    exposure = dcm.get((0x0018, 0x1152)).value
+                    exposure_t = (1000*exposure) / xray_curr
+                
+                return exposure_t > 200
+            elif dcm.get((0x0008, 0x0070)).value == "ELEKTA":
+                return False
+            else:
+                return True
+        else:
+            return False
+    except (PermissionError, AttributeError, TypeError):
+        return False

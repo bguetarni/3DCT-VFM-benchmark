@@ -107,10 +107,10 @@ def load_folder(path):
             dcm = pydicom.dcmread(os.path.join(path, os.listdir(path)[0]))
             type = dcm.get((0x0008, 0x0060)).value
             if type == "CT":
-                if dcm.get((0x0008, 0x0070)).value == "ELEKTA":
-                    return [dicom_class.CBCT(path)]
-                else:
+                if dicom_utils.is_CT(dcm, use_exposure_time=False):
                     return [dicom_class.CT(path)]
+                else:
+                    return [dicom_class.CBCT(path)]
             elif type == "RTSTRUCT":
                 return [dicom_class.RTSTRUCT(path)]
             elif type == 'RTDOSE':
