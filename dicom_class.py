@@ -138,12 +138,9 @@ class DICOM(ABC):
             return None
         
         try:
-            return datetime.strptime(dcm[0x0008,0x0022].value, '%Y%m%d')
-        except KeyError:
-            print(f"Tag AcquisitionDate (0008,0022) not available for {path}")
-            return None
-        except AttributeError:
-            print(f"Tag AcquisitionDate (0008,0022) not available for {path}")
+            return datetime.strptime(dcm[0x0008,0x0012].value, '%Y%m%d')
+        except (KeyError,AttributeError):
+            print(f"Tag Instance Creation Date (0008,0012) not available for {path}")
             return None
 
 

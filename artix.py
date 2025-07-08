@@ -1,5 +1,4 @@
-import logging
-import os, glob, pathlib
+import os, glob, pathlib, logging, re
 import pydicom
 import pandas
 
@@ -81,13 +80,21 @@ def mda_parsing(df):
                            sample_is_column=True)
 
 def aetox_parsing(df):
-    return generic_parsing(df,
-                           filter_pairs=[("AETERM", ["DYSPHAGIE", "XEROSTOMIE"])],
-                           type="AE",
-                           visitID_key="EPOC",
-                           value_key="AEGRMX",
-                           sample_keys="AETERM",
-                           sample_is_column=False)
+    # return generic_parsing(df,
+    #                        filter_pairs=[("AETERM", ["DYSPHAGIE", "XEROSTOMIE"])],
+    #                        type="AE",
+    #                        visitID_key="EPOC",
+    #                        value_key="AEGRMX",
+    #                        sample_keys="AETERM",
+    #                        sample_is_column=False)
+    df = df[df["AETERM"].isin(["DYSPHAGIE", "XEROSTOMIE"])]
+    result = []
+    for _, row in df.iterrows():
+        for k in filter(lambda c: "grade" in c, df.columns):
+            timestamp = re.findall("[SM]\d+", k)
+            if len(timestamp) > 0:
+                result.append({"type": "AE", "value": row[k], "visitID": timestamp[0], "sample": row["AETERM"]})
+    return result
 
 def load_folder(path):
     """

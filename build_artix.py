@@ -10,7 +10,7 @@ import artix
 #         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_TREATMENT_LTSI.csv",
 #         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_DOSIMETRY_LTSI.csv",
 #         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_MDA_LTSI.csv"
-#         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_AE_TOX_GEN_LTSI.csv"
+#         r"C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data\20241021_TOX_GRADE_LTSI.csv"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
