@@ -196,7 +196,7 @@ def load_patient(path,
                 done = True
                 break
 
-        if not done and not log is None:
+        if not(done) and not(log is None):
             log.warning(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
 
     # group CT with struct
@@ -210,7 +210,7 @@ def load_patient(path,
                 done = True
                 break
 
-        if not done and log is None:
+        if not(done) and not(log is None):
             log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
 
     # load clinical data
