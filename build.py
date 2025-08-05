@@ -1,4 +1,5 @@
 import glob, os, tqdm, argparse, pickle
+from datetime import datetime
 import artix
 import hnscc3dctrt
 
@@ -19,9 +20,9 @@ if __name__ == "__main__":
             continue
 
         if args.cohort == "artix":
-            p = artix.load_patient(path=p, id_map=args.id_map, clinical=args.clinical, log="./log")
+            p = artix.load_patient(path=p, id_map=args.id_map, clinical=args.clinical, log=f"./{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
         elif args.cohort == "tcia":
-            p = hnscc3dctrt.load_patient(path=p, clinical=args.clinical, log="./log")
+            p = hnscc3dctrt.load_patient(path=p, clinical=args.clinical, log=f"./{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
         else:
             continue
         

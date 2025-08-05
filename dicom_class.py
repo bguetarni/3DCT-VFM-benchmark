@@ -1,8 +1,10 @@
 from abc import ABC
-import os, gc, glob
+import subprocess
+import os, gc, glob, pathlib, shutil
 from datetime import datetime
 import numpy as np
 import dicom2nifti
+import SimpleITK as sitk
 import pydicom
 import nibabel
 from nibabel import orientations
@@ -149,69 +151,21 @@ class Imaging(DICOM):
         super().__init__(path)
         self.nii = None
 
-    def clear_nii(self):
+    def convert2nifti(self, path_):
         """
-        Call to reduce memory usage
-        """
-        self.nii = None
-        gc.collect()
+        Convert DICOM data into a Nifti file
 
-    def load_nii(self, reorient=True, recalculate_affine=True):
+        args:
+            path_ (str) path to nii file to save data
         """
-        Load DICOM folder into nifti format with or without reorientation and affine recalculation
-
-        Args:
-            reorient (bool) to reorient or not the image into LPS orientation
-            recalculate_affine (bool) to recalculate affine transformation with modified version
-        """
-
-        # load DICOM folder into nifti object
-        self.nii = dicom2nifti.convert_dicom.dicom_series_to_nifti(
-            original_dicom_directory=self.path, 
-            output_file=None,
-            reorient_nifti=False)["NII"]
+        if os.path.isfile(path_):
+            os.remove(path_)
         
-        if reorient or recalculate_affine:
-            if reorient:
-                # reorient volume and affine transform into (x,y,z) (right left, anterior posterior, inferior superior)
-                current_ornt = orientations.io_orientation(self.nii.affine)
-                target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
-                transform = orientations.ornt_transform(current_ornt, target_ornt)
-                new_data = orientations.apply_orientation(self.nii.dataobj, transform)
-            else:
-                new_data = self.nii.dataobj
-
-            if recalculate_affine:
-                # create affine transform with corrected sign and deltas
-                dcm_files = glob.glob(os.path.join(self.path, "*.dcm"))
-                sorted_ = dicom2nifti.common.sort_dicoms(list(map(pydicom.dcmread, dcm_files)))
-                new_affine = create_affine(sorted_)
-            else:
-                new_affine = self.nii.affine
-
-            # build nifti object
-            self.nii = nibabel.Nifti1Image(new_data, new_affine)
-
-    def get_voxel_array(self):
-        """
-        Return image voxel data
-        """
-
-        if self.nii is None:
-            self.load_nii()
+        # convert DICOM to Nifti
+        subprocess.call(["dcm2niix", "-z", "y", "-o", pathlib.Path(path_).parent, "-f", pathlib.Path(pathlib.Path(path_).stem).stem, self.path])
         
-        return self.nii.dataobj
-        
-    def get_affine(self):
-        """
-        Return affine transformation for machine to voxel space
-        """
-
-        if self.nii is None:
-            self.load_nii()
-        
-        return self.nii.affine
-
+        # save path
+        self.nii = path_
 
 class CBCT(Imaging):
     def __init__(self, path):
@@ -277,13 +231,41 @@ class CT(Imaging):
         self.rtstruct = rtstruct
         self.rtstruct.set_parent(self)
 
-    def apply_totalsegmentator(self, task="head_glands_cavities"):
-        self.load_nii(reorient=False, recalculate_affine=False)
-        output_img = totalsegmentator(self.nii, task=task)
-        current_ornt = orientations.io_orientation(self.nii.affine)
-        target_ornt = orientations.axcodes2ornt(('P', 'L', 'S'))
-        transform = orientations.ornt_transform(current_ornt, target_ornt)
-        return orientations.apply_orientation(output_img.dataobj, transform)
+    def get_shape(self):
+        # Get list of DICOM files
+        dicom_files = [os.path.join(self.path, f) for f in os.listdir(self.path)]
+        
+        if not dicom_files:
+            return None
+
+        # Read the first DICOM file to get Rows and Columns
+        ds = pydicom.dcmread(dicom_files[0], stop_before_pixels=True)
+
+        return (ds.Rows, ds.Columns, len(dicom_files))
+
+    def apply_totalsegmentator(self, task, tmp_nii_input, tmp_nii_output=None):
+        """
+        Apply TotalSegmentator model
+
+        args:
+            task (str) task to segment (e.g., head_glands_cavities, headneck_muscles, craniofacial_structures)
+            tmp_nii_input (str) path to which the converted Nifti data will be saved
+            tmp_nii_output (str) path to save the output of segmentation (Nifti mask), if given then this path will be returned, otherwise the output of TotalSegmentator
+        """
+        # convert DICOM to Nifti
+        if self.nii is None:
+            self.convert2nifti(tmp_nii_input)
+            self.nii = tmp_nii_input
+        else:
+            shutil.copy(self.nii, tmp_nii_input)
+
+        # apply TotalSegmentator
+        output = totalsegmentator(tmp_nii_input, task=task)
+        if not(tmp_nii_output is None):
+            nibabel.save(output, tmp_nii_output)
+            return tmp_nii_output
+        else:
+            return output.get_fdata()
     
     def gather_contours(self, parotid=True, submandibular=True, mandibule=True, use_totalsegmentator=True, tol=0.1):
         """"
@@ -308,12 +290,12 @@ class RTDOSE(DICOM):
         Return dose voxel data
         """
 
-        dcm = pydicom.dcmread(self.get_dcm_path())
-
         # raw DICOM voxel values must be scaled by DoseGridScaling to obtain dose values
-        # no need to do this for CT/CBCT because dicom2nifti automatically scales the values when converting to nifti
-        return np.moveaxis(dcm.pixel_array * dcm.DoseGridScaling, 0, -1)
-    
+        DoseGridScaling = pydicom.dcmread(self.get_dcm_path()).DoseGridScaling
+
+        img = sitk.ReadImage(self.get_dcm_path())
+        return sitk.GetArrayFromImage(img) * DoseGridScaling
+
     def get_structure_mask(self, name):
         """
         Return mask of contour on dose volume with shape (H,W,C)
@@ -328,32 +310,18 @@ class RTDOSE(DICOM):
         contours = self.parent.rtstruct.get_contours(name, convert_to_voxel=False)
         contours = np.array(contours).reshape(-1, 3)
 
-        # get DICOM metadata
-        ds = pydicom.dcmread(self.get_dcm_path())
-        dose_origin = np.array(ds.ImagePositionPatient, dtype=np.float32)
-        dose_spacing = np.array([ds.PixelSpacing[0], ds.PixelSpacing[1], ds.GridFrameOffsetVector[1] - ds.GridFrameOffsetVector[0]], dtype=np.float32)
-        dose_orientation = np.array(ds.ImageOrientationPatient, dtype=np.float32).reshape(2, 3)
-        orientation_matrix = np.vstack([dose_orientation, np.cross(dose_orientation[0], dose_orientation[1])])
+        # convert contours to scpace
+        rtdose_image = sitk.ReadImage(self.get_dcm_path())
+        contours = np.array(list(map(rtdose_image.TransformPhysicalPointToIndex, contours)), dtype=np.int64)
 
-        # convert contour to voxel space
-        inverse_orientation = np.linalg.inv(orientation_matrix)
-        voxel_coords = (contours - dose_origin) @ inverse_orientation.T / dose_spacing
-        voxel_coords = np.round(voxel_coords).astype(int)
+        # create mask
+        mask = fill_vol_ctrs(sitk.GetArrayFromImage(rtdose_image).shape, contours)
 
-        # create mask with filled contours
-        mask = fill_vol_ctrs(ds.pixel_array.shape, voxel_coords)
-        return np.moveaxis(mask, 0, -1)
-    
-    def get_mean_dose_structure(self, name):
-        """
-        Return the mean dose to the OAR
-
-        Args:
-            name (str) name of contour as found in RTSTRUCT
-        """
-        assert not(self.parent is None), f"parent must be initialized first to compute mean dose of OAR {name}"
-        assert not(self.parent.rtstruct is None), f"parent.rtstruct must be initialized first to compute mean dose of OAR {name}"
-        return self.get_voxel_array()[self.get_structure_mask(name)].mean()
+        # if z axis is inverted flip mask
+        if rtdose_image.GetDirection()[-1] < 0:
+            mask = np.flip(mask, axis=0)
+        
+        return mask
 
 class RTSTRUCT(DICOM):
     def __init__(self, path):
@@ -374,10 +342,6 @@ class RTSTRUCT(DICOM):
             name (str) name of structure as defined in the DICOM
             convert_to_voxel (bool) if TRUE convert coordinates into voxel space
         """
-
-        if self.parent is None:
-            print("WARNING: cannot return contours as parent is not defined for reference to voxel space affine transformation")
-            return None
         
         # read DICOM file
         dcm = pydicom.dcmread(self.get_dcm_path())
@@ -402,7 +366,14 @@ class RTSTRUCT(DICOM):
         if original_ctr:
             original_ctr = np.asarray(original_ctr, dtype="int64")
             if convert_to_voxel:
-                original_ctr = convert_ctr_to_voxel_space(self.parent.get_affine(), original_ctr)
+                if self.parent is None:
+                    print("WARNING: cannot return contours as parent is not defined for reference to voxel space affine transformation")
+                    return None
+                
+                reader = sitk.ImageSeriesReader()
+                reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.parent.path))
+                ct_image = reader.Execute()
+                original_ctr = np.array(list(map(ct_image.TransformPhysicalPointToIndex, original_ctr)), dtype=np.int64)
             
             return original_ctr
         else:
@@ -416,7 +387,7 @@ class RTSTRUCT(DICOM):
             name (str) name of structure as defined in the DICOM
         """
         ctrs = self.get_contours(name)
-        return fill_vol_ctrs(self.parent.nii.shape, ctrs)
+        return fill_vol_ctrs(self.parent.get_shape(), ctrs)
 
 
 class Patient:
