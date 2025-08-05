@@ -6,6 +6,7 @@ if __name__ == "__main__":
     parser.add_argument('--output_path', type=str, required=True, help='path to folder to save results')
     parser.add_argument('--nii_path', type=str, required=True, help='path where nifti data is or where to save it')
     parser.add_argument('--task', type=str, required=True, choices=["head_glands_cavities", "headneck_muscles", "craniofacial_structures"], help='task of segmentation')
+    parser.add_argument('--first_only', type=int, default=1, help='weither to apply to first CT of patient (1=yes/0=no)')
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
     args = parser.parse_args()
 
@@ -17,7 +18,13 @@ if __name__ == "__main__":
     print(f"found {len(patients)} patients in {args.input_path}")
 
     for p in tqdm.tqdm(patients, ncols=50):
-        for ct in p.ct:
+        if bool(args.first_only):
+            p.sort_imaging()
+            images = p.ct[:1]
+        else:
+            images = p.ct
+        
+        for ct in images:
             nii_path = os.path.join(args.nii_path, str(p.id), f"{pathlib.Path(ct.path).name}.nii.gz")
             out_path = os.path.join(args.output_path, str(p.id), pathlib.Path(ct.path).name, f"{args.task}.nii.gz")
 
