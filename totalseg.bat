@@ -2,14 +2,21 @@
 setlocal
 
 :: Check if argument is provided
-if "%~1"==""(
-    echo Please provide a first argument as the cohort.
+if "%~1" == "" (
+    echo "Please provide a first argument as the cohort."
     exit /b 1
 )
 
-if "%~2"==""(
-    echo Please provide a second argument as a valid TotalSegmentator task (head_glands_cavities, headneck_muscles, craniofacial_structures).
+if "%~2" == "" (
+    echo "Please provide a second argument as a valid TotalSegmentator task (head_glands_cavities, headneck_muscles, craniofacial_structures)."
     exit /b 1
+)
+
+if "%~3" == "" (
+    echo "GPU id not provided, will use 0 as default"
+    set gpu=0
+) else (
+    set "gpu=%~3"
 )
 
 call activate radiomics
@@ -19,12 +26,13 @@ set "cohort=%~1"
 set "task=%~2"
 
 :: Compare against multiple values
-if /i "%cohort%"=="artix" (
-    python totalseg.py --input "C:\Users\bilel.guetarni\Desktop\data\ARTIX\DICOM_ARTIX_data" --output "C:\Users\bilel.guetarni\Desktop\ARTIX\results\artix.pkl" --cohort artix --id_map "C:\Users\bilel.guetarni\Desktop\data\ARTIX\ARTIX_ID_CORRELATION.xlsx" --clinical "C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data"
-) else if /i "%cohort%"=="tcia" (
+if "%cohort%" == "artix" (
+    python totalseg.py --input "C:\Users\bilel.guetarni\Desktop\ARTIX\results\artix.pkl" --output "C:\Users\bilel.guetarni\Desktop\ARTIX\results\totalsegmentator\artix" --nii_path "C:\Users\bilel.guetarni\Desktop\ARTIX\results\nifti\artix" --task "%task%" --gpu "%gpu%"
+) else if "%cohort%" == "tcia" (
     ::todo
+    echo "Not implemented yet"
 ) else (
-    echo Unknown value: %cohort%
+    echo "Unknown value: " %cohort% "use one of [artix, tcia]"
 )
 
 endlocal

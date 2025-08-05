@@ -3,14 +3,12 @@ import subprocess
 import os, gc, glob, pathlib, shutil
 from datetime import datetime
 import numpy as np
-import dicom2nifti
 import SimpleITK as sitk
 import pydicom
 import nibabel
-from nibabel import orientations
 from totalsegmentator.python_api import totalsegmentator
 
-from dicom_utils import create_affine, fill_vol_ctrs, convert_ctr_to_voxel_space
+from dicom_utils import fill_vol_ctrs
 
 """
 CT and RTDOSE/RTSTRUCT files can be matched based on the DICOM tag (0020,0052) Frame of Reference UID
@@ -158,11 +156,17 @@ class Imaging(DICOM):
         args:
             path_ (str) path to nii file to save data
         """
+
+        # if file already exists, remove it so dcm2niix can overwrite
         if os.path.isfile(path_):
             os.remove(path_)
-        
+
+        # remove extension as dcm2niix adds it by default
+        if path_.endswith(".nii.gz"):
+            path_ = path_.removesuffix(".nii.gz")
+
         # convert DICOM to Nifti
-        subprocess.call(["dcm2niix", "-z", "y", "-o", pathlib.Path(path_).parent, "-f", pathlib.Path(pathlib.Path(path_).stem).stem, self.path])
+        subprocess.call(["dcm2niix", "-z", "y", "-v", "0", "-o", pathlib.Path(path_).parent, "-f", pathlib.Path(path_).name, self.path])
         
         # save path
         self.nii = path_
@@ -252,20 +256,25 @@ class CT(Imaging):
             tmp_nii_input (str) path to which the converted Nifti data will be saved
             tmp_nii_output (str) path to save the output of segmentation (Nifti mask), if given then this path will be returned, otherwise the output of TotalSegmentator
         """
-        # convert DICOM to Nifti
-        if self.nii is None:
-            self.convert2nifti(tmp_nii_input)
-            self.nii = tmp_nii_input
+
+        if not(os.path.exists(tmp_nii_input)): # convert DICOM to Nifti
+            if self.nii is None:
+                self.convert2nifti(tmp_nii_input)
+                self.nii = tmp_nii_input
+            else:
+                shutil.copy(self.nii, tmp_nii_input)
         else:
-            shutil.copy(self.nii, tmp_nii_input)
+            self.nii = tmp_nii_input
 
         # apply TotalSegmentator
         output = totalsegmentator(tmp_nii_input, task=task)
-        if not(tmp_nii_output is None):
+
+        # return result or save into tmp_nii_output
+        if tmp_nii_output is None:
+            return output.get_fdata()
+        else:
             nibabel.save(output, tmp_nii_output)
             return tmp_nii_output
-        else:
-            return output.get_fdata()
     
     def gather_contours(self, parotid=True, submandibular=True, mandibule=True, use_totalsegmentator=True, tol=0.1):
         """"

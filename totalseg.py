@@ -1,13 +1,10 @@
-import tqdm, os, glob, argparse, pathlib, pickle
-import numpy as np
-
-import artix
-import dicom_class
+import tqdm, os, argparse, pathlib, pickle, re
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input_path', type=str, required=True, help='path to the cohort PICKLE file')
-    parser.add_argument('--output_path', type=str, required=True, help='path to pickle file to save')
+    parser.add_argument('--output_path', type=str, required=True, help='path to folder to save results')
+    parser.add_argument('--nii_path', type=str, required=True, help='path where nifti data is or where to save it')
     parser.add_argument('--task', type=str, required=True, choices=["head_glands_cavities", "headneck_muscles", "craniofacial_structures"], help='task of segmentation')
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
     args = parser.parse_args()
@@ -21,9 +18,14 @@ if __name__ == "__main__":
 
     for p in tqdm.tqdm(patients, ncols=50):
         for ct in p.ct:
-            out = ct.apply_totalsegmentator(task=args.task)
-            out_path = os.path.join(args.output_path, pathlib.Path(p).name, pathlib.Path(ct.path).name)
-            os.makedirs(out_path, exist_ok=True)
-            np.save(os.path.join(out_path, f"{args.task}.npy"), out)
+            nii_path = os.path.join(args.nii_path, str(p.id), f"{pathlib.Path(ct.path).name}.nii.gz")
+            nii_path = re.sub('__+', '_', nii_path) # dcm2niix naming compatibility
+            out_path = os.path.join(args.output_path, str(p.id), pathlib.Path(ct.path).name, f"{args.task}.nii.gz")
+            out_path = re.sub('__+', '_', out_path) # dcm2niix naming compatibility
+
+            os.makedirs(os.path.split(nii_path)[0], exist_ok=True)
+            os.makedirs(os.path.split(out_path)[0], exist_ok=True)
+
+            ct.apply_totalsegmentator(task=args.task, tmp_nii_input=nii_path, tmp_nii_output=out_path)
 
     print("done")
