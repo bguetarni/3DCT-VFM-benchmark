@@ -19,9 +19,15 @@ if __name__ == "__main__":
     for p in tqdm.tqdm(patients, ncols=50):
         for ct in p.ct:
             nii_path = os.path.join(args.nii_path, str(p.id), f"{pathlib.Path(ct.path).name}.nii.gz")
-            nii_path = re.sub('__+', '_', nii_path) # dcm2niix naming compatibility
             out_path = os.path.join(args.output_path, str(p.id), pathlib.Path(ct.path).name, f"{args.task}.nii.gz")
-            out_path = re.sub('__+', '_', out_path) # dcm2niix naming compatibility
+
+            # dcm2niix naming compatibility
+            nii_path = re.sub(r'__+', '_', nii_path) 
+            out_path = re.sub(r'__+', '_', out_path)
+
+            # dcm2niix naming compatibility
+            nii_path = re.sub(r'\s+', '_', nii_path) 
+            out_path = re.sub(r'\s+', '_', out_path) 
 
             os.makedirs(os.path.split(nii_path)[0], exist_ok=True)
             os.makedirs(os.path.split(out_path)[0], exist_ok=True)
