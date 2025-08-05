@@ -1,6 +1,5 @@
 *.pyc
 testLog.txt
-.gitignore
-head_glands_cavities/*
-headneck_muscles/*
 log
+results/totalsegmentator/head_glands_cavities
+results/totalsegmentator/headneck_muscles
