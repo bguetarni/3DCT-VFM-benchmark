@@ -43,6 +43,7 @@ if __name__ == "__main__":
     if args.apply_total_seg or args.deepNN:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print("using device ", device)
 
     with open(args.input, "rb") as f:
         patients = pickle.load(f)
@@ -54,27 +55,42 @@ if __name__ == "__main__":
     for p in tqdm.tqdm(patients, ncols=50):
         p.sort_imaging()
         ct = p.ct[0]
-        dose = ct.rtdose
 
         out_path = os.path.join(args.output, str(p.id))
         os.makedirs(out_path, exist_ok=True)
 
-        if not(args.radiomics is None):
+        CT_NII_PATH = os.path.join(args.tmp_folder, "volume.nii.gz")
+        DOSE_NII_PATH = os.path.join(args.tmp_folder, "dose.nii.gz")
+
+        if os.path.exists(CT_NII_PATH):
+            os.remove(CT_NII_PATH)
+
+        if os.path.exists(DOSE_NII_PATH):
+            os.remove(DOSE_NII_PATH)
+
+        # convert from DICOM to Nifti
+        ct.convert2nifti(CT_NII_PATH)
+
+        if args.apply_total_seg and (args.radiomics or args.dosiomics or args.dvh or args.deepNN):
+            print("computing segmentations first...")
+
+            for task in TOTAL_SEG_CLASSES.keys():
+                ct.apply_totalsegmentator(task=task, 
+                                          tmp_nii_input=CT_NII_PATH, 
+                                          tmp_nii_output=os.path.join(args.tmp_folder, f"{task}.nii.gz"))
+
+        if args.radiomics:
             print("computing radiomics...")
             extractor = featureextractor.RadiomicsFeatureExtractor()
             extractor.loadParams(args.radiomics)
-            
-            features = []
-            
-            if args.apply_total_seg:
-                nii_path = os.path.join(args.tmp_folder, "volume.nii.gz")
 
+            features = []
+            if args.apply_total_seg:
                 for task, oars in TOTAL_SEG_CLASSES.items():
                     mask_path = os.path.join(args.tmp_folder, f"{task}.nii.gz")
-                    ct.apply_totalsegmentator(task=task, tmp_nii_input=nii_path, tmp_nii_output=mask_path, overwrite_nifti=True)
 
                     for oar_id, oar_name in oars.items():
-                        featureVector = extractor.execute(nii_path, mask_path, label=oar_id, label_channel=0)
+                        featureVector = extractor.execute(CT_NII_PATH, mask_path, label=oar_id, label_channel=0)
                         for fname, fvalue in featureVector.items():
                             type_, class_, name_ = fname.split("_")
                             features.append({"oar": oar_name, "type": type_, "class": class_, "name": name_, "value": fvalue})
@@ -84,28 +100,20 @@ if __name__ == "__main__":
             # save to csv
             pandas.DataFrame(features).to_csv(os.path.join(out_path, "radiomics.csv"))
 
-        if not(args.dosiomics is None) and not(dose is None):
+        if args.dosiomics and ct.rtdose:
             print("computing dosiomics...")
-            nii_path = os.path.join(args.tmp_folder, "dose.nii.gz")
-            dose.convert2nifti(nii_path)
+            ct.rtdose.convert2nifti(DOSE_NII_PATH)
 
             extractor = featureextractor.RadiomicsFeatureExtractor()
             extractor.loadParams(args.dosiomics)
             
             features = []
-            
             if args.apply_total_seg:
                 for task, oars in TOTAL_SEG_CLASSES.items():
                     mask_path = os.path.join(args.tmp_folder, f"{task}.nii.gz")
 
-                    # create TotalSegmentator mask
-                    if args.radiomics is None:
-                        ct_nii_path = os.path.join(args.tmp_folder, "volume.nii.gz")
-                        ct.convert2nifti(ct_nii_path)
-                        ct.apply_totalsegmentator(task=task, tmp_nii_input=ct_nii_path, tmp_nii_output=mask_path)
-
                     for oar_id, oar_name in oars.items():
-                        featureVector = extractor.execute(nii_path, mask_path, label=oar_id, label_channel=0)
+                        featureVector = extractor.execute(DOSE_NII_PATH, mask_path, label=oar_id, label_channel=0)
                         for fname, fvalue in featureVector.items():
                             type_, class_, name_ = fname.split("_")
                             features.append({"oar": oar_name, "type": type_, "class": class_, "name": name_, "value": fvalue})
@@ -115,7 +123,7 @@ if __name__ == "__main__":
             # save to csv
             pandas.DataFrame(features).to_csv(os.path.join(out_path, "dosiomics.csv"))
 
-        if args.dvh:
+        if args.dvh and ct.rtdose:
             print("computing DVH features...")
 
             # Create new RT Struct. 
@@ -123,16 +131,9 @@ if __name__ == "__main__":
             rtstruct = RTStructBuilder.create_new(dicom_series_path=ct.path)
 
             features = []
-            
             if args.apply_total_seg:
                 for task, oars in TOTAL_SEG_CLASSES.items():
                     mask_path = os.path.join(args.tmp_folder, f"{task}.nii.gz")
-
-                    # create TotalSegmentator mask
-                    if args.radiomics is None:
-                        ct_nii_path = os.path.join(args.tmp_folder, "volume.nii.gz")
-                        ct.convert2nifti(ct_nii_path)
-                        ct.apply_totalsegmentator(task=task, tmp_nii_input=ct_nii_path, tmp_nii_output=mask_path)
                     
                     # read mask
                     mask = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
@@ -149,7 +150,7 @@ if __name__ == "__main__":
                         rtstruct.save(os.path.join(args.tmp_folder, "mask.dcm"))
 
                         calcdvh = dvhcalc.get_dvh(structure=os.path.join(args.tmp_folder, "mask.dcm"), 
-                                                  dose=dose.get_dcm_path(), 
+                                                  dose=ct.rtdose.get_dcm_path(), 
                                                   roi={s.ROIName: s.ROINumber for s in rtstruct.ds.StructureSetROISequence}[oar_name])
                         calcdvh.rx_dose = args.rx_dose
                         calcdvh = calcdvh.relative_volume # transform into relative volume DVH
@@ -172,56 +173,52 @@ if __name__ == "__main__":
             pandas.DataFrame(features).to_csv(os.path.join(out_path, "dvh.csv"))
 
         if args.deepNN:
-            nii_path = os.path.join(args.tmp_folder, "volume.nii.gz")
-            ct.convert2nifti(nii_path)
-
+            print("computing deep nn features...")
             if args.apply_total_seg:
                 for task, oars in TOTAL_SEG_CLASSES.items():
-                    # create mask
-                    mask = totalsegmentator(nii_path, task=task)
-                    mask = np.moveaxis(mask.get_fdata(), -1, 0)
+
+                    # read mask
+                    mask = sitk.GetArrayFromImage(sitk.ReadImage(os.path.join(args.tmp_folder, f"{task}.nii.gz")))
+
+                    # channel dimension must be first (see preprocess pipeline below)
+                    mask = np.moveaxis(mask, -1, 0)
 
                     for oar_id, oar_name in oars.items():
-                        mask[mask != oar_id] = 0
-                        mask[mask == oar_id] = 1
 
-                        img = sitk.GetArrayFromImage(sitk.ReadImage(nii_path))
-                        img[np.invert(mask.astype("bool"))] = -1024
-                        img = sitk.GetImageFromArray(img)
-                        sitk.WriteImage(img, nii_path)
+                        TMP_OAR_NII = os.path.join(args.tmp_folder, f"{oar_id}.nii.gz")
+
+                        oar_mask = mask.copy()
+                        oar_mask[oar_mask != oar_id] = 0
+                        oar_mask[oar_mask == oar_id] = 1
+
+                        img = sitk.GetArrayFromImage(sitk.ReadImage(CT_NII_PATH))
+                        img[np.invert(oar_mask.astype("bool"))] = -1024
+                        sitk.WriteImage(sitk.GetImageFromArray(img), TMP_OAR_NII)
 
                         # Load pre-trained model
                         model = SegResEncoder.from_pretrained("project-lighter/ct_fm_feature_extractor")
                         model.eval().to(device=device)
 
-                        # Preprocessing pipeline
+                        # Preprocessing pipeline, do not change it !
                         preprocess = Compose([
-                            LoadImage(ensure_channel_first=True),  # Load image and ensure channel dimension
-                            EnsureType(),                         # Ensure correct data type
-                            Orientation(axcodes="SPL"),           # Standardize orientation
-                            
-                            # Scale intensity to [0,1] range, clipping outliers
-                            ScaleIntensityRange(
-                                a_min=-1024,    # Min HU value
-                                a_max=2048,     # Max HU value
-                                b_min=0,        # Target min
-                                b_max=1,        # Target max
-                                clip=True       # Clip values outside range
-                            ),
-                            CropForeground()    # Remove background to reduce computation
+                            LoadImage(ensure_channel_first=True),
+                            EnsureType(),
+                            Orientation(axcodes="SPL"),
+                            ScaleIntensityRange(a_min=-1024, a_max=2048, b_min=0, b_max=1, clip=True),
+                            CropForeground()
                         ])
 
                         # Preprocess input
-                        input_tensor = preprocess(nii_path)
+                        input_tensor = preprocess(TMP_OAR_NII)
 
                         # Run inference
                         with torch.no_grad():
                             output = model(input_tensor.unsqueeze(0).to(device=device))[-1]
 
-                            # Average pooling compressed the feature vector across all patches. If this is not desired, remove this line and 
-                            # use the output tensor directly which will give you the feature maps in a low-dimensional space.
+                            # Average pooling compressed the feature vector across all patches.
                             avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1).squeeze()
                         
+                        # convert features to numpy and build dictionnary
                         features = avg_output.cpu().numpy()
                         features = {i: j for i,j in enumerate(features.flatten())}
             else:

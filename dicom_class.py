@@ -261,6 +261,8 @@ class CT(Imaging):
             tmp_nii_input (str) path where Nifti data is (use convert2nifti to convert DICOM to Nifti)
             tmp_nii_output (str) path to save the output of segmentation (Nifti mask), if given then this path will be returned, otherwise the output of TotalSegmentator
             overwrite_nifti (bool) can be used to overwrite Nifti data
+
+        if tmp_nii_output is None, return segmentation
         """
 
         if overwrite_nifti:
@@ -279,7 +281,6 @@ class CT(Imaging):
             return output
         else:
             nibabel.save(output, tmp_nii_output)
-            return tmp_nii_output
     
     def gather_contours(self, parotid=True, submandibular=True, mandibule=True, use_totalsegmentator=True, tol=0.1):
         """"
