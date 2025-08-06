@@ -1,6 +1,9 @@
 @echo off
 setlocal
 
+:: to run multiple tasks at once:
+:: totalseg.bat cohort task1 & totalseg.bat cohort task2 & totalseg.bat cohort task3
+
 :: Check if argument is provided
 if "%~1" == "" (
     echo "Please provide a first argument as the cohort."

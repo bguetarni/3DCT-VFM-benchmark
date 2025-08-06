@@ -418,9 +418,19 @@ class Patient:
         self.clinical_measurements = clinical_measurements
 
     def sort_imaging(self):
-        self.ct = sorted(self.ct, key=lambda x: x.get_acquisition_date())
-        self.cbct = sorted(self.cbct, key=lambda x: x.get_acquisition_date())
+        """
+        Sort images (CT,CBCT) based on acquisition date. 
+        Images without this field are placed in the end of the sorted list.
+        """
 
+        def safe_sorting_date(i):
+            valid_date = filter(lambda j: not(j.get_acquisition_date() is None), i)
+            not_valid_date = filter(lambda j: j.get_acquisition_date() is None, i)
+            return [*sorted(valid_date, key=lambda j: j.get_acquisition_date()), *not_valid_date]
+
+        self.ct = safe_sorting_date(self.ct)
+        self.cbct = safe_sorting_date(self.cbct)
+        
     def update_study_base_path(self, study_base_path):
         for ct in self.ct:
             ct.update_study_base_path(study_base_path)
