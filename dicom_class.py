@@ -1,6 +1,6 @@
 from abc import ABC
 import subprocess
-import os, gc, glob, pathlib, shutil
+import os, pathlib
 from datetime import datetime
 import numpy as np
 import SimpleITK as sitk
@@ -10,9 +10,6 @@ from totalsegmentator.python_api import totalsegmentator
 
 from dicom_utils import fill_vol_ctrs
 
-"""
-CT and RTDOSE/RTSTRUCT files can be matched based on the DICOM tag (0020,0052) Frame of Reference UID
-"""
 
 class DICOM(ABC):
     def __init__(self, path, study_base_path=None, parent=None):
@@ -142,13 +139,7 @@ class DICOM(ABC):
         except (KeyError,AttributeError):
             print(f"Tag Instance Creation Date (0008,0012) not available for {path}")
             return None
-
-
-class Imaging(DICOM):
-    def __init__(self, path):
-        super().__init__(path)
-        self.nii = None
-
+        
     def convert2nifti(self, path_):
         """
         Convert DICOM data into a Nifti file
@@ -167,8 +158,22 @@ class Imaging(DICOM):
 
         # convert DICOM to Nifti
         subprocess.call(["dcm2niix", "-z", "y", "-v", "0", "-o", pathlib.Path(path_).parent, "-f", pathlib.Path(path_).name, self.path])
-        
-        # save path
+
+
+class Imaging(DICOM):
+    def __init__(self, path):
+        super().__init__(path)
+        self.nii = None
+
+    def convert2nifti(self, path_):
+        """
+        Convert DICOM data into a Nifti file
+
+        args:
+            path_ (str) path to nii file to save data
+        """
+
+        super().convert2nifti(path_)
         self.nii = path_
 
 class CBCT(Imaging):
@@ -247,31 +252,31 @@ class CT(Imaging):
 
         return (ds.Rows, ds.Columns, len(dicom_files))
 
-    def apply_totalsegmentator(self, task, tmp_nii_input, tmp_nii_output=None):
+    def apply_totalsegmentator(self, task, tmp_nii_input, tmp_nii_output=None, overwrite_nifti=False):
         """
         Apply TotalSegmentator model
 
         args:
             task (str) task to segment (e.g., head_glands_cavities, headneck_muscles, craniofacial_structures)
-            tmp_nii_input (str) path to which the converted Nifti data will be saved
+            tmp_nii_input (str) path where Nifti data is (use convert2nifti to convert DICOM to Nifti)
             tmp_nii_output (str) path to save the output of segmentation (Nifti mask), if given then this path will be returned, otherwise the output of TotalSegmentator
+            overwrite_nifti (bool) can be used to overwrite Nifti data
         """
 
-        if not(os.path.exists(tmp_nii_input)): # convert DICOM to Nifti
-            if self.nii is None:
-                self.convert2nifti(tmp_nii_input)
-                self.nii = tmp_nii_input
-            else:
-                shutil.copy(self.nii, tmp_nii_input)
-        else:
+        if overwrite_nifti:
+            # if file exists remove it
+            if os.path.exists(tmp_nii_input):
+                os.remove(tmp_nii_input)
+
+            self.convert2nifti(tmp_nii_input)
             self.nii = tmp_nii_input
 
         # apply TotalSegmentator
-        output = totalsegmentator(tmp_nii_input, task=task)
+        output = totalsegmentator(tmp_nii_input, task=task, quiet=True, verbose=False)
 
         # return result or save into tmp_nii_output
         if tmp_nii_output is None:
-            return output.get_fdata()
+            return output
         else:
             nibabel.save(output, tmp_nii_output)
             return tmp_nii_output
@@ -331,6 +336,25 @@ class RTDOSE(DICOM):
             mask = np.flip(mask, axis=0)
         
         return mask
+    
+    def convert2nifti(self, path_):
+        """
+        Convert DICOM data into a Nifti file and adjust dose values
+
+        args:
+            path_ (str) path to nii file to save data
+        """
+
+        super().convert2nifti(path_)
+
+        # apply scaling for valid dose values
+        rtdose_image = sitk.ReadImage(path_)
+        dose_array = sitk.GetArrayFromImage(rtdose_image).astype("float")
+        dose_array *= float(pydicom.dcmread(self.get_dcm_path()).DoseGridScaling)
+        rtdose_image_scaled = sitk.GetImageFromArray(dose_array)
+        rtdose_image_scaled.CopyInformation(rtdose_image)
+        sitk.WriteImage(rtdose_image_scaled, path_)
+
 
 class RTSTRUCT(DICOM):
     def __init__(self, path):
