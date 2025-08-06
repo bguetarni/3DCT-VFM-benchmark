@@ -181,9 +181,6 @@ if __name__ == "__main__":
                     # read mask
                     mask = sitk.GetArrayFromImage(sitk.ReadImage(os.path.join(args.tmp_folder, f"{task}.nii.gz")))
 
-                    # channel dimension must be first (see preprocess pipeline below)
-                    mask = np.moveaxis(mask, -1, 0)
-
                     for oar_id, oar_name in oars.items():
 
                         TMP_OAR_NII = os.path.join(args.tmp_folder, f"{oar_id}.nii.gz")
@@ -220,16 +217,12 @@ if __name__ == "__main__":
                             avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1).squeeze()
                         
                         # convert features to numpy and build dictionnary
-                        features = avg_output.cpu().numpy()
-                        features = {i: j for i,j in enumerate(features.flatten())}
+                        features = avg_output.cpu().numpy().flatten().tolist()
+                        features = [dict(enumerate(features))]
             else:
                 raise NotImplementedError #TODO implement using rtstruct
             
             # save to csv
             pandas.DataFrame(features).to_csv(os.path.join(out_path, "deepnn.csv"))
-        
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        break # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     print("Done.")
