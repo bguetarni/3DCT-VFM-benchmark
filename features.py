@@ -46,9 +46,10 @@ if __name__ == "__main__":
         print("using device ", device)
 
     with open(args.input, "rb") as f:
+        print("loading patients...")
         patients = pickle.load(f)
 
-    print(f"found {len(patients)} patients in {args.input_path}")
+    print(f"found {len(patients)} patients in {args.input}")
 
     os.makedirs(args.tmp_folder, exist_ok=True)
 
@@ -226,3 +227,9 @@ if __name__ == "__main__":
             
             # save to csv
             pandas.DataFrame(features).to_csv(os.path.join(out_path, "deepnn.csv"))
+        
+        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        break # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+    print("Done.")
