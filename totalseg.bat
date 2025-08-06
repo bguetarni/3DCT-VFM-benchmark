@@ -30,9 +30,9 @@ set "task=%~2"
 
 :: Compare against multiple values
 if "%cohort%" == "artix" (
-    python totalseg.py --input "C:\Users\bilel.guetarni\Desktop\ARTIX\results\artix.pkl" --output "C:\Users\bilel.guetarni\Desktop\ARTIX\results\totalsegmentator\artix" --nii_path "C:\Users\bilel.guetarni\Desktop\ARTIX\results\nifti\artix" --task "%task%" --gpu "%gpu%"
+    python totalseg.py --input "C:\Users\bilel.guetarni\Desktop\ARTIX\data\artix.pkl" --output "C:\Users\bilel.guetarni\Desktop\ARTIX\data\totalsegmentator\artix" --nii_path "C:\Users\bilel.guetarni\Desktop\ARTIX\data\nifti\artix" --task "%task%" --gpu "%gpu%"
 ) else if "%cohort%" == "tcia" (
-    python totalseg.py --input "C:\Users\bilel.guetarni\Desktop\ARTIX\results\tcia.pkl" --output "C:\Users\bilel.guetarni\Desktop\ARTIX\results\totalsegmentator\tcia" --nii_path "C:\Users\bilel.guetarni\Desktop\ARTIX\results\nifti\tcia" --task "%task%" --gpu "%gpu%"
+    python totalseg.py --input "C:\Users\bilel.guetarni\Desktop\ARTIX\data\tcia.pkl" --output "C:\Users\bilel.guetarni\Desktop\ARTIX\data\totalsegmentator\tcia" --nii_path "C:\Users\bilel.guetarni\Desktop\ARTIX\data\nifti\tcia" --task "%task%" --gpu "%gpu%"
 ) else (
     echo "Unknown value: " %cohort% "use one of [artix, tcia]"
 )
