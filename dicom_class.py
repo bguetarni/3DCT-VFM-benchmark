@@ -135,9 +135,16 @@ class DICOM(ABC):
             return None
         
         try:
-            return datetime.strptime(dcm[0x0008,0x0012].value, '%Y%m%d')
-        except (KeyError,AttributeError):
-            print(f"Tag Instance Creation Date (0008,0012) not available for {path}")
+            return datetime.strptime(dcm[0x0008,0x0023].value, '%Y%m%d')
+        except Exception:
+            try:
+                return datetime.strptime(dcm[0x0008,0x0022].value, '%Y%m%d')
+            except Exception:
+                try:
+                    return datetime.strptime(dcm[0x0008,0x0012].value, '%Y%m%d')
+                except Exception:
+                    print(f"None of the following tags are available for {path}: (Content Date Attribute (0008,0023), \
+                        Acquisition Date Attribute (0008,0022), Tag Instance Creation Date (0008,0022))")
             return None
         
     def convert2nifti(self, path_):
@@ -380,24 +387,16 @@ class RTSTRUCT(DICOM):
         # read DICOM file
         dcm = pydicom.dcmread(self.get_dcm_path())
 
-        # gather all DICOM structures name and id
-        roi_names = {roi.ROINumber: roi.ROIName for roi in dcm.StructureSetROISequence}
-
         # gather structure coordinates
-        original_ctr = []
-        for roi_contour in dcm.ROIContourSequence:
-            if roi_names[roi_contour.ReferencedROINumber] == name:
+        try:
+            roi_index = {roi.ROIName: roi.ROINumber for roi in dcm.StructureSetROISequence}[name]
+            ctrsequence = {item.ReferencedROINumber: item for item in dcm.ROIContourSequence}[roi_index].ContourSequence
+            contours = [np.array(ctr.ContourData).reshape(-1, 3) for ctr in ctrsequence]
+            original_ctr = np.concatenate(contours, axis=0)
+        except Exception:
+            original_ctr = None
 
-                # ContourSequence is a Type 3 property, so not always existing
-                if hasattr(roi_contour, "ContourSequence"):
-                    for contour in roi_contour.ContourSequence:
-                        coords = contour.ContourData
-                        # (x0, y0, z0, x1, y1, z1, ...)
-                        points = list(zip(coords[0::3], coords[1::3], coords[2::3]))
-                        original_ctr.extend(points)
-                    break
-
-        if original_ctr:
+        if not(original_ctr is None):
             original_ctr = np.asarray(original_ctr, dtype="int64")
             if convert_to_voxel:
                 if self.parent is None:
@@ -407,7 +406,7 @@ class RTSTRUCT(DICOM):
                 reader = sitk.ImageSeriesReader()
                 reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.parent.path))
                 ct_image = reader.Execute()
-                original_ctr = np.array(list(map(ct_image.TransformPhysicalPointToIndex, original_ctr)), dtype=np.int64)
+                original_ctr = np.array(list(map(ct_image.TransformPhysicalPointToIndex, original_ctr.tolist())), dtype=np.int64)
             
             return original_ctr
         else:
