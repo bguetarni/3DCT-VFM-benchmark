@@ -9,7 +9,6 @@ from dicompylercore import dvhcalc
 import torch
 from lighter_zoo import SegResEncoder
 from monai.transforms import Compose, LoadImage, EnsureType, Orientation, ScaleIntensityRange, CropForeground
-from totalsegmentator.python_api import totalsegmentator
 
 TOTAL_SEG_CLASSES = {
     "head_glands_cavities": {7: "parotid_gland_left", 8: "parotid_gland_right", 9: "submandibular_gland_right",  10: "submandibular_gland_left"},
@@ -91,10 +90,13 @@ if __name__ == "__main__":
                     mask_path = os.path.join(args.tmp_folder, f"{task}.nii.gz")
 
                     for oar_id, oar_name in oars.items():
-                        featureVector = extractor.execute(CT_NII_PATH, mask_path, label=oar_id, label_channel=0)
-                        for fname, fvalue in featureVector.items():
-                            type_, class_, name_ = fname.split("_")
-                            features.append({"oar": oar_name, "type": type_, "class": class_, "name": name_, "value": fvalue})
+                        try:
+                            featureVector = extractor.execute(CT_NII_PATH, mask_path, label=oar_id, label_channel=0)
+                            for fname, fvalue in featureVector.items():
+                                type_, class_, name_ = fname.split("_")
+                                features.append({"oar": oar_name, "type": type_, "class": class_, "name": name_, "value": fvalue})
+                        except ValueError:
+                            continue
             else:
                 raise NotImplementedError #TODO implement using rtstruct
             
@@ -114,10 +116,13 @@ if __name__ == "__main__":
                     mask_path = os.path.join(args.tmp_folder, f"{task}.nii.gz")
 
                     for oar_id, oar_name in oars.items():
-                        featureVector = extractor.execute(DOSE_NII_PATH, mask_path, label=oar_id, label_channel=0)
-                        for fname, fvalue in featureVector.items():
-                            type_, class_, name_ = fname.split("_")
-                            features.append({"oar": oar_name, "type": type_, "class": class_, "name": name_, "value": fvalue})
+                        try:
+                            featureVector = extractor.execute(DOSE_NII_PATH, mask_path, label=oar_id, label_channel=0)
+                            for fname, fvalue in featureVector.items():
+                                type_, class_, name_ = fname.split("_")
+                                features.append({"oar": oar_name, "type": type_, "class": class_, "name": name_, "value": fvalue})
+                        except ValueError:
+                            continue
             else:
                 raise NotImplementedError #TODO implement using rtstruct
             
@@ -175,6 +180,8 @@ if __name__ == "__main__":
 
         if args.deepNN:
             print("computing deep nn features...")
+            
+            features = []
             if args.apply_total_seg:
                 for task, oars in TOTAL_SEG_CLASSES.items():
 
@@ -213,12 +220,13 @@ if __name__ == "__main__":
                         with torch.no_grad():
                             output = model(input_tensor.unsqueeze(0).to(device=device))[-1]
 
-                            # Average pooling compressed the feature vector across all patches.
-                            avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1).squeeze()
+                        # Average pooling compressed the feature vector across all patches.
+                        avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1).squeeze()
                         
-                        # convert features to numpy and build dictionnary
-                        features = avg_output.cpu().numpy().flatten().tolist()
-                        features = [dict(enumerate(features))]
+                        # convert features to numpy and add to features list
+                        fts = avg_output.cpu().numpy().flatten()
+                        for i, f in enumerate(features):
+                            features.append({"oar": oar_name, "name": i, "value": f})
             else:
                 raise NotImplementedError #TODO implement using rtstruct
             
