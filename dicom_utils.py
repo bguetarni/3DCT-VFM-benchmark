@@ -60,7 +60,7 @@ def create_affine(sorted_dicoms):
     
     return affine
 
-def fill_vol_ctrs(shape, ctrs):
+def fill_vol_ctrs(shape, ctrs, fill_holes=True):
     """
     Create mask of shape (*shape) anf fill contours with 1s
 
@@ -85,6 +85,13 @@ def fill_vol_ctrs(shape, ctrs):
         # fill polygon
         rr, cc = polygon(slice_points[:,1], slice_points[:,0], shape=mask.shape[1:])
         mask[z, rr, cc] = 1
+
+    # fill holes in the mask
+    # deactivate to run faster
+    # if shapes are not filled properly in OAR masks, radiomics might crash !!!
+    if fill_holes:
+        for z in range(mask.shape[0]):
+            mask[z] = binary_fill_holes(mask[z])
     
     return mask
 

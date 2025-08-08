@@ -52,6 +52,10 @@ class DICOM(ABC):
         else:
             # else return path itself
             return self.path
+        
+    def get_sitk_image(self):
+        return sitk.ReadImage(self.get_dcm_path())
+
 
     def get_FrameOfReferenceUID(self):
         """
@@ -183,6 +187,11 @@ class Imaging(DICOM):
         super().convert2nifti(path_)
         self.nii = path_
 
+    def get_sitk_image(self):
+        reader = sitk.ImageSeriesReader()
+        reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.path))
+        return reader.Execute()
+
 class CBCT(Imaging):
     def __init__(self, path):
         super().__init__(path)
@@ -297,6 +306,12 @@ class CT(Imaging):
 class RTDOSE(DICOM):
     def __init__(self, path):
         super().__init__(path)
+
+    def get_shape(self):
+        """
+        Return shape of scan image as (Z,H,W) where Z is the depth, H the height and W the width
+        """
+        return sitk.GetArrayFromImage(sitk.ReadImage(self.get_dcm_path())).shape
     
     def get_voxel_array(self):
         """
@@ -321,16 +336,15 @@ class RTDOSE(DICOM):
 
         # load contours of structure
         contours = self.parent.rtstruct.get_contours(name, convert_to_voxel=False)
-        contours = np.array(contours).reshape(-1, 3)
 
         # convert contours to scpace
         rtdose_image = sitk.ReadImage(self.get_dcm_path())
-        contours = np.array(list(map(rtdose_image.TransformPhysicalPointToIndex, contours)), dtype=np.int64)
+        contours = np.array(list(map(rtdose_image.TransformPhysicalPointToIndex, contours.tolist())), dtype=np.int64)
 
         # create mask
-        mask = fill_vol_ctrs(sitk.GetArrayFromImage(rtdose_image).shape, contours)
+        mask = fill_vol_ctrs(self.get_shape(), contours)
 
-        # if z axis is inverted flip mask
+        # if z axis is inverted, flip mask y-axis
         if rtdose_image.GetDirection()[-1] < 0:
             mask = np.flip(mask, axis=0)
         
@@ -346,13 +360,13 @@ class RTDOSE(DICOM):
 
         super().convert2nifti(path_)
 
-        # apply scaling for valid dose values
-        rtdose_image = sitk.ReadImage(path_)
-        dose_array = sitk.GetArrayFromImage(rtdose_image).astype("float")
+        # apply scaling for valid dose values because DoseGridScaling parameter is lost afterwards
+        dose_image = sitk.ReadImage(path_)
+        dose_array = sitk.GetArrayFromImage(dose_image).astype("float")
         dose_array *= float(pydicom.dcmread(self.get_dcm_path()).DoseGridScaling)
-        rtdose_image_scaled = sitk.GetImageFromArray(dose_array)
-        rtdose_image_scaled.CopyInformation(rtdose_image)
-        sitk.WriteImage(rtdose_image_scaled, path_)
+        dose_image_scaled = sitk.GetImageFromArray(dose_array)
+        dose_image_scaled.CopyInformation(dose_image)
+        sitk.WriteImage(dose_image_scaled, path_)
 
 
 class RTSTRUCT(DICOM):

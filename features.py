@@ -3,13 +3,13 @@ import pandas
 import numpy as np
 
 from radiomics import featureextractor
+import nibabel
 from rt_utils import RTStructBuilder
 import SimpleITK as sitk
 from dicompylercore import dvhcalc
 import torch
 from lighter_zoo import SegResEncoder
 from monai.transforms import Compose, LoadImage, EnsureType, Orientation, ScaleIntensityRange, CropForeground
-import pydicom
 
 TOTAL_SEG_CLASSES = {
     "head_glands_cavities": {7: "parotid_gland_left", 8: "parotid_gland_right", 9: "submandibular_gland_right",  10: "submandibular_gland_left"},
@@ -17,12 +17,12 @@ TOTAL_SEG_CLASSES = {
     "craniofacial_structures": {1: "mandible"},
 }
 
-def create_mask_original(rtstruct, oars_map, p_id, mask_path):
+def create_mask_original(dicom_obj, mask_path, oars_map, p_id):
     """
-    rtstruct (RTSTRUCT) rtstruct object containing OARs contours
-    oars_map (str) path to csv for mapping original OAR names to standard ones
-    p_id (str, int) patient ID
+    dicom_obj (CT,RTDOSE) dicome object for copying image metadata and computing mask optionally
     mask_path (str) path to save mask in Nifti format
+    oars_map (str) path to csv for mapping original OAR names to standard ones
+    p_id (str,int) patient ID
     """
     # transform mapping from original to standard names in dict 
     # with original names as keys and standard names as values
@@ -30,28 +30,37 @@ def create_mask_original(rtstruct, oars_map, p_id, mask_path):
     oars_map = oars_map[oars_map["patient_id"] == int(p_id)]
     oars_map = oars_map.set_index('original_name').to_dict()['renamed_name']
 
-    dcm = pydicom.dcmread(rtstruct.get_dcm_path())
     oars = dict()
     i = 1
     mask = None
-    for roi in dcm.StructureSetROISequence:
-        if not(roi.ROIName in list(oars_map.keys())):
-            continue
-        
+    for oar_original_name, oar_standard_name in oars_map.items():
         try:
-            roi_mask = rtstruct.get_structure_mask(roi.ROIName)
+            if hasattr(dicom_obj, "get_structure_mask"):
+                roi_mask = dicom_obj.get_structure_mask(oar_original_name)
+            else:
+                roi_mask = dicom_obj.rtstruct.get_structure_mask(oar_original_name)
+            
             if mask is None:
                 mask = np.zeros_like(roi_mask, dtype=np.int16)
+            
             mask[roi_mask] = i
-            oars.update({oars_map[roi.ROIName]: i})
+            oars.update({oar_standard_name: i})
             i += 1
         except Exception:
             pass
-    sitk.WriteImage(sitk.GetImageFromArray(mask), mask_path)
+    
+    # copy image metadata into mask
+    mask = sitk.GetImageFromArray(mask.astype(np.uint8))
+    mask.CopyInformation(dicom_obj.get_sitk_image())
+    
+    # save mask
+    sitk.WriteImage(mask, mask_path)
+    
     return oars
 
-def create_mask_totalsegmentator(nii_path, mask_path):
+def create_mask_totalsegmentator(dicom_obj, nii_path, mask_path):
     """
+    dicom_obj (CT,RTDOSE) dicome object for copying image metadata and computing mask optionally
     nii_path (srt) path to image nifti data
     mask_path (str) path to save mask in Nifti format
     """
@@ -59,27 +68,31 @@ def create_mask_totalsegmentator(nii_path, mask_path):
     i = 1
     mask = None
     for task in TOTAL_SEG_CLASSES.keys():
-        output = ct.apply_totalsegmentator(task=task, tmp_nii_input=nii_path)
-        output = sitk.GetArrayFromImage(output)
-        for oar_id, oar_name in TOTAL_SEG_CLASSES[task]:
+        dicom_obj.apply_totalsegmentator(task=task, tmp_nii_input=nii_path, tmp_nii_output=mask_path)
+        nib_mask = nibabel.load(mask_path)
+        output = nib_mask.get_fdata()
+        for oar_id, oar_name in TOTAL_SEG_CLASSES[task].items():
             if mask is None:
                 mask = np.zeros_like(output, dtype=np.int16)
 
             mask[output == oar_id] = i
             oars.update({oar_name: i})
             i += 1
-    sitk.WriteImage(sitk.GetImageFromArray(mask), mask_path)
+
+    # copy image metadata into mask and save it
+    mask = nibabel.Nifti1Image(mask, nib_mask.affine, nib_mask.header)
+    nibabel.save(mask, mask_path)
+    
     return oars
 
-def compute_radiomics_generic(mask_path, oars, nii_path, radiomics_yaml):
+def compute_radiomics_generic(nii_path, mask_path, oars, radiomics_yaml):
     """
     Compute radiomics using OAR segmentation
 
     args
-        tmp_folder (str) path where temporary files (Nifti, DICOM) are saved
-        oar_names (str) path to csv file containing mapping between RTSTRUCT OAR names and standard ones
-        patient_id (int, str) patient ID
         nii_path (str) path to image nifti data
+        mask_path (str) path to mask nifti data
+        oars (dict) dictionnary containing mapping between RTSTRUCT OAR names and standard ones
         radiomics_yaml (str) path to the pyradiomics params file
     """
 
@@ -165,40 +178,46 @@ if __name__ == "__main__":
 
         # convert from DICOM to Nifti
         ct.convert2nifti(CT_NII_PATH)
+        ct.rtdose.convert2nifti(DOSE_NII_PATH)
 
         # create OARs mask based on origin argument and get oar name id mapping
-        mask_path = os.path.join(args.tmp_folder, "mask.nii.gz")
+        CT_MASK_PATH = os.path.join(args.tmp_folder, "volume_mask.nii.gz")
+        DOSE_MASK_PATH = os.path.join(args.tmp_folder, "dose_mask.nii.gz")
+
         if args.oar_source == "totalsegmentator":
-            print("computing segmentations with TotlSegmentator...")
-            oars = create_mask_totalsegmentator(CT_NII_PATH, mask_path)
+            print("computing segmentations with TotalSegmentator...")
+            oars = create_mask_totalsegmentator(ct, CT_NII_PATH, CT_MASK_PATH)
+            
+            # same mask for CT and RTDOSE if TotalSegmentator is appleid
+            DOSE_MASK_PATH = CT_MASK_PATH
         elif args.oar_source == "original":
-            print("creating OARs mask based on original contours...")
-            oars = create_mask_original(ct.rtstruct, args.oar_names, int(p.id), mask_path)
+            print("creating OARs masks based on original contours...")
+            oars = create_mask_original(ct, CT_MASK_PATH, args.oar_names, int(p.id))
+            create_mask_original(ct.rtdose, DOSE_MASK_PATH, args.oar_names, int(p.id))
         else:
             raise ValueError("argument --oar_source must be one of [original, totalsegmentator]")
         
         if args.radiomics:
             print("computing radiomics...")
-            features = compute_radiomics_generic(mask_path, oars, CT_NII_PATH, args.radiomics)
+            features = compute_radiomics_generic(CT_NII_PATH, CT_MASK_PATH, oars, args.radiomics)
             print("saving radiomics in csv...")
             pandas.DataFrame(features).to_csv(os.path.join(out_path, "radiomics.csv"))
 
         if args.dosiomics and ct.rtdose:
             print("computing dosiomics...")
-            ct.rtdose.convert2nifti(DOSE_NII_PATH)
-            features = compute_radiomics_generic(mask_path, oars, DOSE_NII_PATH, args.dosiomics)
+            features = compute_radiomics_generic(DOSE_NII_PATH, DOSE_MASK_PATH, oars, args.dosiomics)
             print("saving dosiomics in csv...")
             pandas.DataFrame(features).to_csv(os.path.join(out_path, "dosiomics.csv"))
 
         if args.dvh and ct.rtdose:
             print("computing DVH features...")
 
-            # Create new RT Struct. 
+            # Create new RT Struct.
             # Requires the DICOM series path for the RT Struct.
             rtstruct = RTStructBuilder.create_new(dicom_series_path=ct.path)
                     
             # read mask
-            mask = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
+            mask = sitk.GetArrayFromImage(sitk.ReadImage(CT_MASK_PATH))
             
             features = []
             for oar_name, oar_id in oars.items():
@@ -214,9 +233,10 @@ if __name__ == "__main__":
                 rtstruct.save(os.path.join(args.tmp_folder, "mask.dcm"))
 
                 # compute dvh features
+                roi_id = {roi.ROIName: roi.ROINumber for roi in rtstruct.ds.StructureSetROISequence}[oar_name]
                 calcdvh = dvhcalc.get_dvh(structure=os.path.join(args.tmp_folder, "mask.dcm"), 
-                                            dose=ct.rtdose.get_dcm_path(), 
-                                            roi={s.ROIName: s.ROINumber for s in rtstruct.ds.StructureSetROISequence}[oar_name])
+                                          dose=ct.rtdose.get_dcm_path(), 
+                                          roi=roi_id)
                 calcdvh.rx_dose = args.rx_dose
                 calcdvh = calcdvh.relative_volume # transform into relative volume DVH
                 calcdvh = calcdvh.absolute_dose() # transform to absolute dose
@@ -239,15 +259,15 @@ if __name__ == "__main__":
             print("computing deep nn features...")            
 
             # read mask
-            mask = sitk.GetArrayFromImage(sitk.ReadImage(mask_path))
+            mask = sitk.GetArrayFromImage(sitk.ReadImage(CT_MASK_PATH))
 
             features = []
             for oar_name, oar_id in oars.items():
                 TMP_OAR_NII = os.path.join(args.tmp_folder, f"{oar_name}.nii.gz")
 
                 oar_mask = mask.copy()
-                oar_mask[oar_mask != oar_id] = 0
-                oar_mask[oar_mask == oar_id] = 1
+                oar_mask[mask != oar_id] = 0
+                oar_mask[mask == oar_id] = 1
 
                 img = sitk.GetArrayFromImage(sitk.ReadImage(CT_NII_PATH))
                 img[np.invert(oar_mask.astype("bool"))] = -1024
@@ -263,7 +283,7 @@ if __name__ == "__main__":
                     EnsureType(),
                     Orientation(axcodes="SPL"),
                     ScaleIntensityRange(a_min=-1024, a_max=2048, b_min=0, b_max=1, clip=True),
-                    CropForeground()
+                    CropForeground(margin=100)
                 ])
 
                 # Preprocess input
@@ -272,16 +292,19 @@ if __name__ == "__main__":
                 # Run inference
                 with torch.no_grad():
                     try:
+                        print(oar_name)
                         output = model(input_tensor.unsqueeze(0).to(device=device))[-1]
+                        print(output.shape)
                     except RuntimeError: # might throw an error if the oar ROI is too small
                         continue
 
                 # Average pooling compressed the feature vector across all patches.
                 avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1).squeeze()
+                print(avg_output.shape)
                 
                 # convert features to numpy and add to features list
                 fts = avg_output.cpu().numpy().flatten()
-                for i, f in enumerate(features):
+                for i, f in enumerate(fts):
                     features.append({"oar": oar_name, "name": i, "value": f})
             
             # save to csv
