@@ -248,6 +248,10 @@ class CT(Imaging):
         self.rtstruct.set_parent(self)
 
     def get_shape(self):
+        """
+        Return shape of scan image as (Z,H,W) where Z is the depth, H the height and W the width
+        """
+
         # Get list of DICOM files
         dicom_files = [os.path.join(self.path, f) for f in os.listdir(self.path)]
         
@@ -257,7 +261,7 @@ class CT(Imaging):
         # Read the first DICOM file to get Rows and Columns
         ds = pydicom.dcmread(dicom_files[0], stop_before_pixels=True)
 
-        return (ds.Rows, ds.Columns, len(dicom_files))
+        return (len(dicom_files), ds.Rows, ds.Columns)
 
     def apply_totalsegmentator(self, task, tmp_nii_input, tmp_nii_output=None, overwrite_nifti=False):
         """
@@ -288,19 +292,6 @@ class CT(Imaging):
             return output
         else:
             nibabel.save(output, tmp_nii_output)
-    
-    def gather_contours(self, parotid=True, submandibular=True, mandibule=True, use_totalsegmentator=True, tol=0.1):
-        """"
-        Gather contours from RTSTRUCT or using TotalSegmentator
-        Return dict containing OARs contours with name
-
-        Args:
-            parotid (bool) if gathering parotid glands contours
-            submandibular (bool) if gathering submandibular glands contours
-            use_totalsegmentator (bool) if True use TotalSegmentator to create missing contours
-            tol (float) threshold between RTSTRUCT contour and TotalSegmentator to considerate RTSTRUCT 
-        """
-        pass #TODO
 
 
 class RTDOSE(DICOM):
@@ -374,6 +365,16 @@ class RTSTRUCT(DICOM):
         """
         dcm = pydicom.dcmread(self.get_dcm_path())
         return [roi.ROIName for roi in dcm.StructureSetROISequence]
+    
+    def get_OAR_id(self, name):
+        """
+        Return the id of OAR name as found in DICOM
+
+        args
+            name (str) name of OAR as found in DICOM RTSTRUCT
+        """
+        dcm = pydicom.dcmread(self.get_dcm_path())
+        return {roi.ROIName: roi.ROINumber for roi in dcm.StructureSetROISequence}[name]
 
     def get_contours(self, name, convert_to_voxel=True):
         """
@@ -391,7 +392,7 @@ class RTSTRUCT(DICOM):
         try:
             roi_index = {roi.ROIName: roi.ROINumber for roi in dcm.StructureSetROISequence}[name]
             ctrsequence = {item.ReferencedROINumber: item for item in dcm.ROIContourSequence}[roi_index].ContourSequence
-            contours = [np.array(ctr.ContourData).reshape(-1, 3) for ctr in ctrsequence]
+            contours = [np.array(ctr.ContourData).reshape(-1, 3) for ctr in ctrsequence] # (x,y,z)
             original_ctr = np.concatenate(contours, axis=0)
         except Exception:
             original_ctr = None
@@ -421,8 +422,38 @@ class RTSTRUCT(DICOM):
         """
         ctrs = self.get_contours(name)
         return fill_vol_ctrs(self.parent.get_shape(), ctrs)
+    
+    def create_nii_mask_oars(self, path_=None, oars=None):
+        """
+        Create a mask with labels as found in DICOM file similar to TotalSegmentator labeling.
+        If path_ is provided, save it into as a Nifti image
 
+        args
+            path_ (str) path to nifti file, if None return mask
+            oars (List[str]) list of oars to compute mask, if None compute for all OARs in RTSTRUCT
+        """
 
+        # initialize empty mask
+        mask = np.zeros(shape=self.parent.get_shape(), dtype=np.uint8)
+        
+        # read DICOM file
+        dcm = pydicom.dcmread(self.get_dcm_path())
+        
+        try:
+            for roi in dcm.StructureSetROISequence:
+                if isinstance(oars, list) and not(roi.ROIName in oars):
+                    continue
+
+                roi_mask = self.get_structure_mask(roi.ROIName)
+                mask[roi_mask] = roi.ROINumber
+        except Exception:
+            return None
+        
+        if path_:
+            sitk.WriteImage(sitk.GetImageFromArray(mask), path_)
+        else:
+            return mask
+        
 class Patient:
     def __init__(self, id_, ct=[], cbct=[], clinical={}, clinical_measurements=[]):
         """
