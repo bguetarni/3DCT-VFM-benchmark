@@ -283,7 +283,7 @@ if __name__ == "__main__":
                     EnsureType(),
                     Orientation(axcodes="SPL"),
                     ScaleIntensityRange(a_min=-1024, a_max=2048, b_min=0, b_max=1, clip=True),
-                    CropForeground(margin=100)
+                    CropForeground(margin=50)
                 ])
 
                 # Preprocess input
@@ -292,15 +292,12 @@ if __name__ == "__main__":
                 # Run inference
                 with torch.no_grad():
                     try:
-                        print(oar_name)
                         output = model(input_tensor.unsqueeze(0).to(device=device))[-1]
-                        print(output.shape)
                     except RuntimeError: # might throw an error if the oar ROI is too small
                         continue
 
                 # Average pooling compressed the feature vector across all patches.
                 avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1).squeeze()
-                print(avg_output.shape)
                 
                 # convert features to numpy and add to features list
                 fts = avg_output.cpu().numpy().flatten()
