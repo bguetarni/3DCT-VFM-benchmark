@@ -90,9 +90,11 @@ def load_patient(path, clinical=None, log=None, **kwargs):
         done = False
         for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
             if rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID():
-                ct.add_rtstruct(rtstruct, log)
-                done = True
-                break
+                dcm = pydicom.dcmread(rtstruct.get_dcm_path())
+                if (dcm.get((0x0008, 0x0070)).value == "MIM Software Inc." or dcm.get((0x0008, 0x1090)).value == "MIM") or ct.rtstruct is None:
+                    ct.add_rtstruct(rtstruct, log)
+                    done = True
+                    break
 
         if not(done) and not(log is None):
             log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")

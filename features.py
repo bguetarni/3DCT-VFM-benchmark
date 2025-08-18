@@ -11,6 +11,11 @@ import torch
 from lighter_zoo import SegResEncoder
 from monai.transforms import Compose, LoadImage, EnsureType, Orientation, ScaleIntensityRange, CropForeground
 
+
+# patients 046 and 260 do not have an RTDOSE with CT0/A0, they have to be excluded
+# see if instead, CT1 can be used (if it has an RTDOSE)
+
+
 TOTAL_SEG_CLASSES = {
     "head_glands_cavities": {7: "parotid_gland_left", 8: "parotid_gland_right", 9: "submandibular_gland_right",  10: "submandibular_gland_left"},
     "headneck_muscles": {3: "superior_pharyngeal_constrictor", 4: "middle_pharyngeal_constrictor", 5: "inferior_pharyngeal_constrictor"},
@@ -173,7 +178,20 @@ if __name__ == "__main__":
         # select first scan
         ct = p.ct[0]
 
+        # check that CT image has an RTDOSE
+        if ct.rtdose is None:
+            print(f"WARNING: patient {p.id} CT0 does not have an RTDOSE, skipping..")
+            continue
+
+        # define and delete if existing the patient output directory
         out_path = os.path.join(args.output, str(p.id))
+        if os.path.isdir(out_path):
+            try:
+                os.rmdir(out_path)
+            except (FileNotFoundError, OSError):
+                pass
+        
+        # create the output directory of patient
         os.makedirs(out_path, exist_ok=True)
 
         # convert from DICOM to Nifti
