@@ -22,5 +22,3 @@ if /i "%arg%"=="artix" (
 )
 
 endlocal
-
-call conda deactivate

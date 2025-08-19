@@ -139,11 +139,6 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
     args = parser.parse_args()
 
-    # TODO: add arguments:
-    #   dcm2niix conversion argument
-    #   other pyradiomics image types (LoG, ...)
-    #   slides artifacts removing
-
     if args.oar_source == "totalsegmentator" or args.deepNN:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
