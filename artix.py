@@ -180,9 +180,12 @@ def load_patient(path, id_map, clinical=None, log=None):
     for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
         done = False
         for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
+            if max(dicom_utils.get_directory_level(rtdose.path, ct.path)) > 1:
+                continue
+
             if rtdose.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID() or \
                 rtdose.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
-                    max(dicom_utils.get_directory_level(rtdose.path, ct.path)) < 2 and ct.rtdose is None:
+                    ct.rtdose is None:
                 ct.add_rtdose(rtdose, log)
                 done = True
                 break
