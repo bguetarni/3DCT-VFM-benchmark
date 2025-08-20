@@ -8,3 +8,5 @@ data/
 features/
 experiments/*
 dataset.csv
+artix_totalsegmentator.csv
+artix_original.csv
