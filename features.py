@@ -8,8 +8,19 @@ from rt_utils import RTStructBuilder
 import SimpleITK as sitk
 from dicompylercore import dvhcalc
 import torch
-from lighter_zoo import SegResEncoder
-from monai.transforms import Compose, LoadImage, EnsureType, Orientation, ScaleIntensityRange, CropForeground
+from monai import transforms as monai_transforms
+
+try:
+    from lighter_zoo import SegResEncoder
+except ModuleNotFoundError:
+    print("WARNING: module pydicom version error, if SegResEncoder to import use another env")
+    pass
+
+try:
+    from fmcib.models import fmcib_model
+except ModuleNotFoundError:
+    print("WARNING: module pydicom version error, if fmcib_model to import use another env")
+    pass
 
 
 # patients 046 and 260 do not have an RTDOSE with CT0/A0, they have to be excluded
@@ -130,7 +141,7 @@ if __name__ == "__main__":
     parser.add_argument('--radiomics', type=str, default=None, help="path to the pyradiomics params file, if None then not applied")
     parser.add_argument('--dosiomics', type=str, default=None, help="path to the pyradiomics params file, if None then not applied")
     parser.add_argument('--dvh', action="store_true", default=False)
-    parser.add_argument('--deepNN', action="store_true", default=False)
+    parser.add_argument('--deepNN', type=str, default=False, choices=["ct-fm", "fmcib"], help="name of foundation model to use")
     
     # additional parameters
     parser.add_argument('--oar_source', type=str, default="original", choices=["original", "totalsegmentator"], help="wether to use original OAR segmentations or apply TotalSegmentator")
@@ -287,17 +298,40 @@ if __name__ == "__main__":
                 sitk.WriteImage(sitk.GetImageFromArray(img), TMP_OAR_NII)
 
                 # Load pre-trained model
-                model = SegResEncoder.from_pretrained("project-lighter/ct_fm_feature_extractor")
-                model.eval().to(device=device)
+                if args.deepNN == "ct-fm":
+                    model = SegResEncoder.from_pretrained("project-lighter/ct_fm_feature_extractor")
 
-                # Preprocessing pipeline, do not change it !
-                preprocess = Compose([
-                    LoadImage(ensure_channel_first=True),
-                    EnsureType(),
-                    Orientation(axcodes="SPL"),
-                    ScaleIntensityRange(a_min=-1024, a_max=2048, b_min=0, b_max=1, clip=True),
-                    CropForeground(margin=50)
-                ])
+                    # Preprocessing pipeline, do not change it !
+                    preprocess = monai_transforms.Compose(
+                        [
+                            monai_transforms.LoadImage(ensure_channel_first=True),
+                            monai_transforms.EnsureType(),
+                            monai_transforms.Orientation(axcodes="SPL"),
+                            monai_transforms.ScaleIntensityRange(a_min=-1024, a_max=2048, b_min=0, b_max=1, clip=True),
+                            monai_transforms.CropForeground(margin=50)
+                        ]
+                    )
+                elif args.deepNN == "fmcib":
+                    model = fmcib_model()
+
+                    # see https://github.com/AIM-Harvard/foundation-cancer-image-biomarker/blob/1f1c0c8725c110c9c70cb466467a55e3160760c9/fmcib/preprocessing/__init__.py#L18
+                    preprocess = monai_transforms.Compose(
+                        [
+                            monai_transforms.LoadImage(image_only=True, reader="ITKReader"),
+                            monai_transforms.EnsureChannelFirst(),
+                            monai_transforms.NormalizeIntensity(subtrahend=-1024, divisor=3072),
+                            monai_transforms.Spacing(pixdim=1, padding_mode="zeros", mode="linear", align_corners=True, diagonal=True),
+                            monai_transforms.Orientation(axcodes="LPS"),
+                            monai_transforms.CropForeground(),   # better than CenterCrop to avoid removing roi
+                            monai_transforms.Transpose(indices=(0, 3, 2, 1)),
+                            monai_transforms.SpatialPad(spatial_size=(100, 100, 100)),
+                        ]
+                    )
+                else:
+                    raise NotImplementedError(f"foundation model {args.deepNN} not implemented")
+                
+                # send model to device
+                model.eval().to(device=device)
 
                 # Preprocess input
                 input_tensor = preprocess(TMP_OAR_NII)
@@ -305,19 +339,20 @@ if __name__ == "__main__":
                 # Run inference
                 with torch.no_grad():
                     try:
-                        output = model(input_tensor.unsqueeze(0).to(device=device))[-1]
-                    except RuntimeError: # might throw an error if the oar ROI is too small
+                        output = model(input_tensor.unsqueeze(0).to(device=device))
+                    except RuntimeError: # might throw an error if the ROI is too small
                         continue
 
                 # Average pooling compressed the feature vector across all patches.
-                avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1).squeeze()
+                if args.deepNN == "ct-fm":
+                    output = torch.nn.functional.adaptive_avg_pool3d(output[-1], 1)
                 
                 # convert features to numpy and add to features list
-                fts = avg_output.cpu().numpy().flatten()
+                fts = output.squeeze().cpu().numpy().flatten()
                 for i, f in enumerate(fts):
                     features.append({"oar": oar_name, "name": i, "value": f})
             
             # save to csv
-            pandas.DataFrame(features).to_csv(os.path.join(out_path, "deepnn.csv"))
+            pandas.DataFrame(features).to_csv(os.path.join(out_path, f"deepnn({args.deepNN}).csv"))
 
     print("Done.")

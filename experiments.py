@@ -2,13 +2,22 @@ import os, itertools, re, pickle, json, copy
 import pandas
 from sklearn.model_selection import KFold, ShuffleSplit
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, precision_score, recall_score, f1_score, log_loss
+from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, precision_score, recall_score, f1_score, log_loss, confusion_matrix
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import scale, minmax_scale
+from sklearn.utils.multiclass import unique_labels
 import numpy as np
 import tqdm
 from radiomics import getFeatureClasses
 
+def zero_division(num, den):
+    try:
+        if den == 0:
+            return 0
+        else:
+            return num / den
+    except TypeError:
+        return 0
 
 
 def transform_(x):
@@ -35,8 +44,8 @@ def load_features(path_, type_, patient_id, columns_to_keep=["oar", "name", "val
     patient_folder = os.path.join(path_, [i for i in os.listdir(path_) if int(i) == int(patient_id)][0])
     features = pandas.read_csv(os.path.join(patient_folder, f"{type_}.csv"))
 
-    # if "Unnamed: 0" in features.columns:
-    #     features = features.drop(columns=["Unnamed: 0"])
+    if "Unnamed: 0" in features.columns:
+        features = features.drop(columns=["Unnamed: 0"])
 
     if columns_to_keep:
         features = features[columns_to_keep]
@@ -142,10 +151,11 @@ def build_dataset(cohort_path, features_path, combined_path):
 
         try:
             # deepnn
-            deepnn = load_features(features_path, "deepnn", p.id)
-            deepnn["id"] = int(p.id)
-            deepnn["features"] = "deepnn"
-            patient_df.extend(deepnn.to_dict(orient="records"))
+            for name_ in ("deepnn", "deepnn(fmcib)"):
+                deepnn = load_features(features_path, name_, p.id)
+                deepnn["id"] = int(p.id)
+                deepnn["features"] = name_
+                patient_df.extend(deepnn.to_dict(orient="records"))
         except (FileNotFoundError, IndexError):
             print(f"WARNING: patient {p.id} missing deepnn data")
             continue
@@ -186,6 +196,10 @@ def cross_validation(X, Y, normalization="minmax", kfold=3, bootstrap=None, feat
         x_train, y_train = X[train_index], Y[train_index]
         x_test, y_test = X[test_index], Y[test_index]
 
+        if unique_labels(y_train).size == 1 or unique_labels(y_test).size == 1:
+            print("WARNING: skipping bootstrap step due to unique label in y_train or y_test")
+            continue
+
         # normalize features separatly (to avoid data leakage)
         if normalization == "minmax":
             x_train = minmax_scale(x_train, axis=0)
@@ -225,13 +239,16 @@ def cross_validation(X, Y, normalization="minmax", kfold=3, bootstrap=None, feat
             clf.fit(x_train, y_train)
             y_pred = clf.predict(x_test)
             y_pred_proba = clf.predict_proba(x_test)
+
+            tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+
             metrics.append({
                 "acc": accuracy_score(y_test, y_pred),
                 "auc": roc_auc_score(y_test, y_pred),
                 "balanced_accuracy": balanced_accuracy_score(y_test, y_pred),
-                "precision": precision_score(y_test, y_pred, zero_division=0),
-                "recall": recall_score(y_test, y_pred, zero_division=0),
                 "f1_score": f1_score(y_test, y_pred, zero_division=0),
+                "specificity": zero_division(tn, (tn + fp)),
+                "sensitivity": zero_division(tp, (tp + fn)),
                 "log_loss": log_loss(y_test, y_pred_proba),
             })
         except ValueError:
@@ -351,10 +368,10 @@ if __name__ == "__main__":
     OARS = {"original": ["parotid_gland_ipsi", "parotid_gland_contra", "submandibular_gland_ipsi", "submandibular_gland_contra", "mandible", "oral_cavity"],
             "totalseg": ["parotid_gland_left", "parotid_gland_right", "submandibular_gland_right", "submandibular_gland_left", "mandible"]}
 
-    exp_code = "009"
+    exp_code = "013"
     cohort_path = r"C:\Users\bilel.guetarni\Desktop\ARTIX\data\artix.pkl"
 
-    base_params = {"oars": [], "features": {"clinical": [], "radiomics": [], "dosiomics": [], "dvh": [], "deepnn": []},
+    base_params = {"oars": [], "features": {"clinical": [], "radiomics": [], "dosiomics": [], "dvh": [], "deepnn": [], "deepnn(fmcib)": -1},
                 "feature_reduction_N": None, "normalization": "minmax", "bootstrap": 100, "kfold": 3}
     
     i = 0
@@ -362,14 +379,18 @@ if __name__ == "__main__":
                                       (r"C:\Users\bilel.guetarni\Desktop\ARTIX\features\totalsegmentator\artix", "totalseg")]:
         print(seg_origin)
         exps = []
-        for feature_reduction_N in [None, 10, 50, 100]:
-            for features in [*itertools.combinations(base_params["features"].keys(), 1), base_params["features"].keys()]:
-                base_params_copy = copy.deepcopy(base_params)
-                base_params_copy["oars"] = OARS[seg_origin]
-                base_params_copy["feature_reduction_N"] = feature_reduction_N
-                for fts in features:
-                    base_params_copy["features"][fts] = -1
-                exps.append(base_params_copy)
+        for oars in OARS[seg_origin]:
+            for feature_reduction_N in [None, 10, 50, 100]:
+                for features in [
+                    {},
+                    {"dvh": ["mean"]},
+                ]:
+                    base_params_copy = copy.deepcopy(base_params)
+                    base_params_copy["oars"] = [oars]
+                    base_params_copy["feature_reduction_N"] = feature_reduction_N
+                    for k, v in features.items():
+                        base_params_copy["features"][k] = v
+                    exps.append(base_params_copy)
         exp_code_ = f"{exp_code}_{str(i).zfill(3)}"
         run_experiment(cohort_path, features_path, exps, exp_code_, verbose=False)
         i += 1
