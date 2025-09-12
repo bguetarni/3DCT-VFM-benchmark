@@ -1,66 +1,49 @@
-import tqdm, os, argparse, pickle
+import tqdm
+import os
+import argparse
+import pickle
 import pandas
 import numpy as np
 
 from radiomics import featureextractor
-import nibabel
 from rt_utils import RTStructBuilder
 import SimpleITK as sitk
 from dicompylercore import dvhcalc
 import torch
 from monai import transforms as monai_transforms
+from lighter_zoo import SegResEncoder
 
-try:
-    from lighter_zoo import SegResEncoder
-except ModuleNotFoundError:
-    print("WARNING: module pydicom version error, if SegResEncoder to import use another env")
-    pass
-
-try:
-    from fmcib.models import fmcib_model
-except ModuleNotFoundError:
-    print("WARNING: module pydicom version error, if fmcib_model to import use another env")
-    pass
+import dicom_class
 
 
-# patients 046 and 260 do not have an RTDOSE with CT0/A0, they have to be excluded
-# see if instead, CT1 can be used (if it has an RTDOSE)
-
-
-TOTAL_SEG_CLASSES = {
-    "head_glands_cavities": {7: "parotid_gland_left", 8: "parotid_gland_right", 9: "submandibular_gland_right",  10: "submandibular_gland_left"},
-    "headneck_muscles": {3: "superior_pharyngeal_constrictor", 4: "middle_pharyngeal_constrictor", 5: "inferior_pharyngeal_constrictor"},
-    "craniofacial_structures": {1: "mandible"},
-}
-
-def create_mask_original(dicom_obj, mask_path, oars_map, p_id):
+def create_mask_original(dicom_obj, mask_path):
     """
-    dicom_obj (CT,RTDOSE) dicome object for copying image metadata and computing mask optionally
+    dicom_obj (CT,RTDOSE) dicom object for copying image metadata and computing mask optionally
     mask_path (str) path to save mask in Nifti format
-    oars_map (str) path to csv for mapping original OAR names to standard ones
-    p_id (str,int) patient ID
     """
-    # transform mapping from original to standard names in dict 
-    # with original names as keys and standard names as values
-    oars_map = pandas.read_csv(oars_map)
-    oars_map = oars_map[oars_map["patient_id"] == int(p_id)]
-    oars_map = oars_map.set_index('original_name').to_dict()['renamed_name']
 
-    oars = dict()
-    i = 1
+    if isinstance(dicom_obj, dicom_class.CT):
+        oars = dicom_obj.rtstruct.get_all_OARs()
+    elif isinstance(dicom_obj, dicom_class.RTDOSE):
+        oars = dicom_obj.get_parent().rtstruct.get_all_OARs()
+    else:
+        return None
+    
+    oars_mask = dict()
     mask = None
-    for oar_original_name, oar_standard_name in oars_map.items():
+    i = 1
+    for oar in oars:
         try:
-            if hasattr(dicom_obj, "get_structure_mask"):
-                roi_mask = dicom_obj.get_structure_mask(oar_original_name)
+            if isinstance(dicom_obj, dicom_class.CT):
+                roi_mask = dicom_obj.rtstruct.get_structure_mask(oar)
             else:
-                roi_mask = dicom_obj.rtstruct.get_structure_mask(oar_original_name)
-            
+                roi_mask = dicom_obj.get_structure_mask(oar)
+    
             if mask is None:
                 mask = np.zeros_like(roi_mask, dtype=np.int16)
             
             mask[roi_mask] = i
-            oars.update({oar_standard_name: i})
+            oars_mask.update({oar: i})
             i += 1
         except Exception:
             pass
@@ -72,34 +55,8 @@ def create_mask_original(dicom_obj, mask_path, oars_map, p_id):
     # save mask
     sitk.WriteImage(mask, mask_path)
     
-    return oars
+    return oars_mask
 
-def create_mask_totalsegmentator(dicom_obj, nii_path, mask_path):
-    """
-    dicom_obj (CT,RTDOSE) dicome object for copying image metadata and computing mask optionally
-    nii_path (srt) path to image nifti data
-    mask_path (str) path to save mask in Nifti format
-    """
-    oars = dict()
-    i = 1
-    mask = None
-    for task in TOTAL_SEG_CLASSES.keys():
-        dicom_obj.apply_totalsegmentator(task=task, tmp_nii_input=nii_path, tmp_nii_output=mask_path)
-        nib_mask = nibabel.load(mask_path)
-        output = nib_mask.get_fdata()
-        for oar_id, oar_name in TOTAL_SEG_CLASSES[task].items():
-            if mask is None:
-                mask = np.zeros_like(output, dtype=np.int16)
-
-            mask[output == oar_id] = i
-            oars.update({oar_name: i})
-            i += 1
-
-    # copy image metadata into mask and save it
-    mask = nibabel.Nifti1Image(mask, nib_mask.affine, nib_mask.header)
-    nibabel.save(mask, mask_path)
-    
-    return oars
 
 def compute_radiomics_generic(nii_path, mask_path, oars, radiomics_yaml):
     """
@@ -135,28 +92,23 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True, help='path to the cohort PICKLE file')
     parser.add_argument('--output', type=str, required=True, help='path to folder to save results')
-    parser.add_argument('--tmp_folder', type=str, required=True, help='path where temporary files (Nifti, DICOM) are saved')
+    parser.add_argument('--tmp_folder', type=str, default="./", help='path where temporary files (Nifti, DICOM) are saved')
     
     # features to compute
     parser.add_argument('--radiomics', type=str, default=None, help="path to the pyradiomics params file, if None then not applied")
     parser.add_argument('--dosiomics', type=str, default=None, help="path to the pyradiomics params file, if None then not applied")
     parser.add_argument('--dvh', action="store_true", default=False)
-    parser.add_argument('--deepNN', type=str, default=False, choices=["ct-fm", "fmcib"], help="name of foundation model to use")
+    parser.add_argument('--deepNN', type=str, default=False, choices=["ct-fm"], help="name of foundation model to use")
     
     # additional parameters
-    parser.add_argument('--oar_source', type=str, default="original", choices=["original", "totalsegmentator"], help="wether to use original OAR segmentations or apply TotalSegmentator")
-    parser.add_argument('--oar_names', type=str, default=None, help="path to csv file containing mapping between RTSTRUCT OAR names and standard ones")
     parser.add_argument('--rx_dose', type=int, default=70, help="prescribed value for RT, used to normalise DVH")
-    parser.add_argument('--gpu', type=str, default="", help='GPU to use')
+    parser.add_argument('--gpu', type=str, default="", help='GPU to use (e.g., 0)')
     args = parser.parse_args()
 
-    if args.oar_source == "totalsegmentator" or args.deepNN:
+    if args.deepNN:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print("using device ", device)
-
-    if args.oar_source == "original" and not(args.oar_names):
-        raise ValueError("If using original OAR source then --oar_names argument must be specified")
 
     with open(args.input, "rb") as f:
         print("loading patients...")
@@ -168,6 +120,8 @@ if __name__ == "__main__":
 
     CT_NII_PATH = os.path.join(args.tmp_folder, "volume.nii.gz")
     DOSE_NII_PATH = os.path.join(args.tmp_folder, "dose.nii.gz")
+    CT_MASK_PATH = os.path.join(args.tmp_folder, "volume_mask.nii.gz")
+    DOSE_MASK_PATH = os.path.join(args.tmp_folder, "dose_mask.nii.gz")
 
     # remove temporary volume nifti file
     if os.path.exists(CT_NII_PATH):
@@ -204,22 +158,10 @@ if __name__ == "__main__":
         ct.convert2nifti(CT_NII_PATH)
         ct.rtdose.convert2nifti(DOSE_NII_PATH)
 
-        # create OARs mask based on origin argument and get oar name id mapping
-        CT_MASK_PATH = os.path.join(args.tmp_folder, "volume_mask.nii.gz")
-        DOSE_MASK_PATH = os.path.join(args.tmp_folder, "dose_mask.nii.gz")
-
-        if args.oar_source == "totalsegmentator":
-            print("computing segmentations with TotalSegmentator...")
-            oars = create_mask_totalsegmentator(ct, CT_NII_PATH, CT_MASK_PATH)
-            
-            # same mask for CT and RTDOSE if TotalSegmentator is appleid
-            DOSE_MASK_PATH = CT_MASK_PATH
-        elif args.oar_source == "original":
-            print("creating OARs masks based on original contours...")
-            oars = create_mask_original(ct, CT_MASK_PATH, args.oar_names, int(p.id))
-            create_mask_original(ct.rtdose, DOSE_MASK_PATH, args.oar_names, int(p.id))
-        else:
-            raise ValueError("argument --oar_source must be one of [original, totalsegmentator]")
+        # create OARs mask get oar name id mapping
+        print("creating OARs masks based on original contours...")
+        oars = create_mask_original(ct, CT_MASK_PATH, args.oar_names, int(p.id))
+        create_mask_original(ct.rtdose, DOSE_MASK_PATH, args.oar_names, int(p.id))
         
         if args.radiomics:
             print("computing radiomics...")
@@ -309,22 +251,6 @@ if __name__ == "__main__":
                             monai_transforms.Orientation(axcodes="SPL"),
                             monai_transforms.ScaleIntensityRange(a_min=-1024, a_max=2048, b_min=0, b_max=1, clip=True),
                             monai_transforms.CropForeground(margin=50)
-                        ]
-                    )
-                elif args.deepNN == "fmcib":
-                    model = fmcib_model()
-
-                    # see https://github.com/AIM-Harvard/foundation-cancer-image-biomarker/blob/1f1c0c8725c110c9c70cb466467a55e3160760c9/fmcib/preprocessing/__init__.py#L18
-                    preprocess = monai_transforms.Compose(
-                        [
-                            monai_transforms.LoadImage(image_only=True, reader="ITKReader"),
-                            monai_transforms.EnsureChannelFirst(),
-                            monai_transforms.NormalizeIntensity(subtrahend=-1024, divisor=3072),
-                            monai_transforms.Spacing(pixdim=1, padding_mode="zeros", mode="linear", align_corners=True, diagonal=True),
-                            monai_transforms.Orientation(axcodes="LPS"),
-                            monai_transforms.CropForeground(),   # better than CenterCrop to avoid removing roi
-                            monai_transforms.Transpose(indices=(0, 3, 2, 1)),
-                            monai_transforms.SpatialPad(spatial_size=(100, 100, 100)),
                         ]
                     )
                 else:

@@ -1,14 +1,52 @@
 from abc import ABC
 import subprocess
-import os, pathlib
+import os
+import pathlib
 from datetime import datetime
 import numpy as np
 import SimpleITK as sitk
 import pydicom
 import nibabel
+from scipy.ndimage import binary_fill_holes
+from skimage.draw import polygon
 from totalsegmentator.python_api import totalsegmentator
 
-from dicom_utils import fill_vol_ctrs
+
+def fill_vol_ctrs(shape, ctrs, fill_holes=True):
+    """
+    Create mask of shape (*shape) anf fill contours with 1s
+
+    Args:
+        shape (tuple) shape of mask (z,h,w)
+        ctrs (List,tuple) contours arranged as (x,y,z)
+    """
+    mask = np.zeros(shape, dtype=bool)
+    for z in np.unique(ctrs[:,-1]):
+
+        # check for boundaries
+        if z >= mask.shape[0]:
+            continue
+        
+        # select point on place
+        slice_points = ctrs[ctrs[:,-1] == z]
+
+        # check at least 3 points for polygon
+        if slice_points.shape[0] < 3:
+            continue
+
+        # fill polygon
+        rr, cc = polygon(slice_points[:,1], slice_points[:,0], shape=mask.shape[1:])
+        mask[z, rr, cc] = 1
+
+    # fill holes in the mask
+    # deactivate to run faster
+    # if shapes are not filled properly in OAR masks, radiomics might crash !!!
+    if fill_holes:
+        for z in range(mask.shape[0]):
+            mask[z] = binary_fill_holes(mask[z])
+    
+    return mask
+
 
 
 class DICOM(ABC):

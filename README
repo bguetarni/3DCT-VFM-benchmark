@@ -1,5 +1,0 @@
- # Build a cohort
-run the `build.bat` script by scpecifying the cohort to build
-
-# Compute features
-run the `features.bat` by specyfing the cohort and gpu as argument
