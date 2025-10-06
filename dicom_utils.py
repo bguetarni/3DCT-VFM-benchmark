@@ -2,6 +2,7 @@ import os, pathlib
 import numpy as np
 from scipy.ndimage import binary_fill_holes
 from skimage.draw import polygon
+import SimpleITK as sitk
 
 def get_directory_level(path1, path2):
     """
@@ -99,3 +100,14 @@ def convert_ctr_to_voxel_space(affine, points):
 
     # drop homogeneous coordinate
     return voxel_ctr[:,:3]
+
+def resample_dose_to_ct(ct_nii_path, dose_nii_path, out_path):
+    # Resample dose to match CT volume
+    planning_ct = sitk.ReadImage(ct_nii_path)
+    dose_image = sitk.ReadImage(dose_nii_path)
+    resampler = sitk.ResampleImageFilter()
+    resampler.SetReferenceImage(planning_ct)
+    resampler.SetInterpolator(sitk.sitkLinear)
+    resampler.SetDefaultPixelValue(0)  # In case resampling introduces new pixels
+    resampled_dose = resampler.Execute(dose_image)
+    sitk.WriteImage(resampled_dose, out_path)

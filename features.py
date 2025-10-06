@@ -1,6 +1,10 @@
 import tqdm, os, argparse, pickle
 import pandas
 import numpy as np
+from scipy.ndimage.morphology import binary_fill_holes
+from scipy.signal import find_peaks
+from skimage.filters import threshold_otsu, gaussian
+from skimage.transform import radon
 
 from radiomics import featureextractor
 import nibabel
@@ -9,6 +13,8 @@ import SimpleITK as sitk
 from dicompylercore import dvhcalc
 import torch
 from monai import transforms as monai_transforms
+
+import DAClassification
 
 try:
     from lighter_zoo import SegResEncoder
@@ -27,15 +33,9 @@ except ModuleNotFoundError:
 # see if instead, CT1 can be used (if it has an RTDOSE)
 
 
-TOTAL_SEG_CLASSES = {
-    "head_glands_cavities": {7: "parotid_gland_left", 8: "parotid_gland_right", 9: "submandibular_gland_right",  10: "submandibular_gland_left"},
-    "headneck_muscles": {3: "superior_pharyngeal_constrictor", 4: "middle_pharyngeal_constrictor", 5: "inferior_pharyngeal_constrictor"},
-    "craniofacial_structures": {1: "mandible"},
-}
-
 def create_mask_original(dicom_obj, mask_path, oars_map, p_id):
     """
-    dicom_obj (CT,RTDOSE) dicome object for copying image metadata and computing mask optionally
+    dicom_obj (CT,RTDOSE) dicom object for copying image metadata and computing mask optionally
     mask_path (str) path to save mask in Nifti format
     oars_map (str) path to csv for mapping original OAR names to standard ones
     p_id (str,int) patient ID
@@ -51,10 +51,10 @@ def create_mask_original(dicom_obj, mask_path, oars_map, p_id):
     mask = None
     for oar_original_name, oar_standard_name in oars_map.items():
         try:
-            if hasattr(dicom_obj, "get_structure_mask"):
-                roi_mask = dicom_obj.get_structure_mask(oar_original_name)
-            else:
+            if hasattr(dicom_obj, "rtstruct"):
                 roi_mask = dicom_obj.rtstruct.get_structure_mask(oar_original_name)
+            else:
+                roi_mask = dicom_obj.parent.rtstruct.get_structure_mask(oar_original_name)
             
             if mask is None:
                 mask = np.zeros_like(roi_mask, dtype=np.int16)
@@ -80,14 +80,21 @@ def create_mask_totalsegmentator(dicom_obj, nii_path, mask_path):
     nii_path (srt) path to image nifti data
     mask_path (str) path to save mask in Nifti format
     """
+
+    TOTALSEG_CLASS = {
+        "head_glands_cavities": {7: "parotid_gland_left", 8: "parotid_gland_right", 9: "submandibular_gland_right",  10: "submandibular_gland_left"},
+        "headneck_muscles": {3: "superior_pharyngeal_constrictor", 4: "middle_pharyngeal_constrictor", 5: "inferior_pharyngeal_constrictor"},
+        "craniofacial_structures": {1: "mandible"},
+        }
+    
     oars = dict()
     i = 1
     mask = None
-    for task in TOTAL_SEG_CLASSES.keys():
+    for task in TOTALSEG_CLASS.keys():
         dicom_obj.apply_totalsegmentator(task=task, tmp_nii_input=nii_path, tmp_nii_output=mask_path)
         nib_mask = nibabel.load(mask_path)
         output = nib_mask.get_fdata()
-        for oar_id, oar_name in TOTAL_SEG_CLASSES[task].items():
+        for oar_id, oar_name in TOTALSEG_CLASS[task].items():
             if mask is None:
                 mask = np.zeros_like(output, dtype=np.int16)
 
@@ -130,6 +137,79 @@ def compute_radiomics_generic(nii_path, mask_path, oars, radiomics_yaml):
             continue
     return features
 
+def get_DA_slices_index(ct_path):
+    """
+    Find slices with dental artifacts and return the indices
+
+    args:
+        ct_path (str) path to CT in nifti format for detecting artifacts
+    """
+
+    z_min, z_max = 20, -2
+    y_min, y_max = 0, 350
+    x_min, x_max = 50, -50
+    MIN, MAX = -1024, 3000
+
+    torch.cuda.set_device(0)
+    network = DAClassification.LoadNet("./", 'testCheckpoint.pth.tar')
+    network.cuda()
+
+    image = DAClassification.LoadImage(ct_path)
+    predicted_label = DAClassification.GetPredictions(image.cuda(), network)
+    if predicted_label.cpu().numpy().item():
+        original_stack = sitk.ReadImage(ct_path)
+
+        # This removes unwanted common features
+        stack = original_stack[z_min:z_max, y_min:y_max, x_min:x_max]
+
+        # Normalize the image
+        stack = stack.astype(float)
+        stack = np.clip(stack, MIN, MAX)
+        stack = (stack - MIN) / (MAX - MIN)
+
+        # Loop through all images in patient's stack of scans
+        intensities = []
+        for image in tqdm.tqdm(stack) :
+            if np.sum(image) < 1.0e-8 :
+                intensities.append(0.0)
+                continue   # If the image is entirely black, just go to next image
+
+            # Remove the patient's body from the images
+            try :
+                otsu = threshold_otsu(image)                  # Compute Otsu threshold
+                fill = binary_fill_holes(np.array(image > otsu, dtype=int))  # Fill holes
+                gauss_fill = gaussian(fill, sigma=10)        # Add Gaussian  blur
+                fill = np.array(gauss_fill < 0.01, dtype=int)    # Threshold again
+                image = np.multiply(image, fill)            # Crop out body from raw image
+            except ValueError:
+                # If image is None, just go to next image
+                # remove_body() may return None if the slice is identically some value
+                intensities.append(0.0)
+                continue
+
+            # Threshold the new image
+            image = np.array(image > 0.02, dtype=int)
+
+            theta = np.linspace(0., 180., 180, endpoint=False)
+            sinogram = radon(image, theta=theta, circle=True)
+            mean = np.mean(sinogram[120:-120, 40:-40])
+            intensities.append(mean)
+
+        # Find the slices with artifacts
+        indices, _ = find_peaks(intensities, height=5e-10)
+        
+        # Convert indices to list of ints
+        indices = np.asarray(indices, dtype="int") + z_min
+        return list(indices)
+
+def remove_slice(slice_index, mask_path):
+    original_mask = sitk.ReadImage(mask_path)
+    mask = sitk.GetArrayFromImage(original_mask)
+    for z in slice_index:
+        mask[z] = 0
+    mask = sitk.GetImageFromArray(mask)
+    mask = mask.CopyInformation(original_mask)
+    sitk.WriteImage(mask_path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -144,6 +224,7 @@ if __name__ == "__main__":
     parser.add_argument('--deepNN', type=str, default=False, choices=["ct-fm", "fmcib"], help="name of foundation model to use")
     
     # additional parameters
+    parser.add_argument('--filterDA', action="store_true", default=False, help="weither to filter slices with dental artifcats (computationally intensive)")
     parser.add_argument('--oar_source', type=str, default="original", choices=["original", "totalsegmentator"], help="wether to use original OAR segmentations or apply TotalSegmentator")
     parser.add_argument('--oar_names', type=str, default=None, help="path to csv file containing mapping between RTSTRUCT OAR names and standard ones")
     parser.add_argument('--rx_dose', type=int, default=70, help="prescribed value for RT, used to normalise DVH")
@@ -177,6 +258,7 @@ if __name__ == "__main__":
     if os.path.exists(DOSE_NII_PATH):
         os.remove(DOSE_NII_PATH)
 
+    features = []
     for p in tqdm.tqdm(patients, ncols=50):
         # sort images to recover first CT scans (i.e., CT0)
         p.sort_imaging()
@@ -188,17 +270,6 @@ if __name__ == "__main__":
         if ct.rtdose is None:
             print(f"WARNING: patient {p.id} CT0 does not have an RTDOSE, skipping..")
             continue
-
-        # define and delete if existing the patient output directory
-        out_path = os.path.join(args.output, str(p.id))
-        if os.path.isdir(out_path):
-            try:
-                os.rmdir(out_path)
-            except (FileNotFoundError, OSError):
-                pass
-        
-        # create the output directory of patient
-        os.makedirs(out_path, exist_ok=True)
 
         # convert from DICOM to Nifti
         ct.convert2nifti(CT_NII_PATH)
@@ -212,7 +283,7 @@ if __name__ == "__main__":
             print("computing segmentations with TotalSegmentator...")
             oars = create_mask_totalsegmentator(ct, CT_NII_PATH, CT_MASK_PATH)
             
-            # same mask for CT and RTDOSE if TotalSegmentator is appleid
+            # same mask for CT and RTDOSE if TotalSegmentator is applied
             DOSE_MASK_PATH = CT_MASK_PATH
         elif args.oar_source == "original":
             print("creating OARs masks based on original contours...")
@@ -221,17 +292,25 @@ if __name__ == "__main__":
         else:
             raise ValueError("argument --oar_source must be one of [original, totalsegmentator]")
         
+        if args.filterDA:
+            index = get_DA_slices_index(CT_NII_PATH)
+            if index:
+                remove_slice(CT_MASK_PATH)
+                remove_slice(DOSE_MASK_PATH)
+        
         if args.radiomics:
             print("computing radiomics...")
-            features = compute_radiomics_generic(CT_NII_PATH, CT_MASK_PATH, oars, args.radiomics)
-            print("saving radiomics in csv...")
-            pandas.DataFrame(features).to_csv(os.path.join(out_path, "radiomics.csv"))
+            fts = compute_radiomics_generic(CT_NII_PATH, CT_MASK_PATH, oars, args.radiomics)
+            for d in fts:
+                d.update({"modality": "radiomics", "patient": str(p.id)})
+            features.extend(fts)
 
         if args.dosiomics and ct.rtdose:
             print("computing dosiomics...")
-            features = compute_radiomics_generic(DOSE_NII_PATH, DOSE_MASK_PATH, oars, args.dosiomics)
-            print("saving dosiomics in csv...")
-            pandas.DataFrame(features).to_csv(os.path.join(out_path, "dosiomics.csv"))
+            fts = compute_radiomics_generic(DOSE_NII_PATH, DOSE_MASK_PATH, oars, args.dosiomics)
+            for d in fts:
+                d.update({"modality": "dosiomics", "patient": str(p.id)})
+            features.extend(fts)
 
         if args.dvh and ct.rtdose:
             print("computing DVH features...")
@@ -243,7 +322,6 @@ if __name__ == "__main__":
             # read mask
             mask = sitk.GetArrayFromImage(sitk.ReadImage(CT_MASK_PATH))
             
-            features = []
             for oar_name, oar_id in oars.items():
                 # create oar mask
                 oar_mask = mask.copy()
@@ -274,10 +352,7 @@ if __name__ == "__main__":
                 }
 
                 for k, v in dvh.items():
-                    features.append({"oar": oar_name, "name": k, "value": v})
-
-            # save to csv
-            pandas.DataFrame(features).to_csv(os.path.join(out_path, "dvh.csv"))
+                    features.append({"oar": oar_name, "name": k, "value": v, "modality": "dvh", "patient": str(p.id)})
 
         if args.deepNN:
             print("computing deep nn features...")            
@@ -285,7 +360,6 @@ if __name__ == "__main__":
             # read mask
             mask = sitk.GetArrayFromImage(sitk.ReadImage(CT_MASK_PATH))
 
-            features = []
             for oar_name, oar_id in oars.items():
                 TMP_OAR_NII = os.path.join(args.tmp_folder, f"{oar_name}.nii.gz")
 
@@ -350,9 +424,8 @@ if __name__ == "__main__":
                 # convert features to numpy and add to features list
                 fts = output.squeeze().cpu().numpy().flatten()
                 for i, f in enumerate(fts):
-                    features.append({"oar": oar_name, "name": i, "value": f})
-            
-            # save to csv
-            pandas.DataFrame(features).to_csv(os.path.join(out_path, f"deepnn({args.deepNN}).csv"))
+                    features.append({"oar": oar_name, "name": i, "value": f, "modality": f"deepnn({args.deepNN})", "patient": str(p.id)})
 
+    # save to csv
+    pandas.DataFrame(features).to_csv(args.output)
     print("Done.")

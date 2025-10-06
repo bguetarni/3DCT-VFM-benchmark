@@ -1,0 +1,114 @@
+patient,original_name,transformed_name
+HN_P001,Rparotid,parotid_gland_right
+HN_P001,Lparotid,parotid_gland_left
+HN_P001,Mandible,mandible
+HN_P002,Rparotid,parotid_gland_right
+HN_P002,Lparotid,parotid_gland_left
+HN_P002,oral cavity,oral_cavity
+HN_P002,Mandible,mandible
+HN_P003,Lparotid,parotid_gland_left
+HN_P003,Rparotid,parotid_gland_right
+HN_P003,Mandible,mandible
+HN_P004,Mandible,mandible
+HN_P004,Lparotid,parotid_gland_left
+HN_P004,Rparotid,parotid_gland_right
+HN_P004,ORAL CAVITY,oral_cavity
+HN_P005,Oral Cavity,oral_cavity
+HN_P005,Lparotid,parotid_gland_left
+HN_P005,Rparotid,parotid_gland_right
+HN_P005,Mandible,mandible
+HN_P007,Lparotid,parotid_gland_left
+HN_P007,Rparotid,parotid_gland_right
+HN_P007,ORAL CAVITY,oral_cavity
+HN_P007,Mandible,mandible
+HN_P008,Lparotid,parotid_gland_left
+HN_P008,Rparotid,parotid_gland_right
+HN_P008,Oral Cavity,oral_cavity
+HN_P008,Mandible,mandible
+HN_P009,Mandible,mandible
+HN_P009,Lparotid,parotid_gland_left
+HN_P009,Rparotid,parotid_gland_right
+HN_P009,Oral Cavity,oral_cavity
+HN_P009,sup constrictor,superior_pharyngeal_constrictor
+HN_P010,Lparotid,parotid_gland_left
+HN_P010,Rparotid,parotid_gland_right
+HN_P011,Mandible,mandible
+HN_P011,Lparotid,parotid_gland_left
+HN_P011,Rparotid,parotid_gland_right
+HN_P012,Lparotid,parotid_gland_left
+HN_P012,Rparotid,parotid_gland_right
+HN_P012,Mandible,mandible
+HN_P013,Lparotid,parotid_gland_left
+HN_P013,Mandible,mandible
+HN_P014,Mandible,mandible
+HN_P014,Lparotid,parotid_gland_left
+HN_P014,Rparotid,parotid_gland_right
+HN_P015,Lparotid,parotid_gland_left
+HN_P015,Rparotid,parotid_gland_right
+HN_P016,Lparotid,parotid_gland_left
+HN_P016,Rparotid,parotid_gland_right
+HN_P016,Mandible,mandible
+HN_P017,Mandible,mandible
+HN_P017,Rparotid,parotid_gland_right
+HN_P017,Lparotid,parotid_gland_left
+HN_P017,Oral cavity,oral_cavity
+HN_P018,Mandible,mandible
+HN_P018,Lparotid,parotid_gland_left
+HN_P018,Rparotid,parotid_gland_right
+HN_P018,Oral Cavity,oral_cavity
+HN_P019,Mandible,mandible
+HN_P019,ORAL CAVITY,oral_cavity
+HN_P019,Rparotid,parotid_gland_right
+HN_P020,Mandible,mandible
+HN_P020,ORAL CAVITY,oral_cavity
+HN_P020,Lparotid,parotid_gland_left
+HN_P020,Rparotid,parotid_gland_right
+HN_P022,Mandible,mandible
+HN_P022,ORAL CAVITY,oral_cavity
+HN_P022,Lparotid,parotid_gland_left
+HN_P022,Rparotid,parotid_gland_right
+HN_P023,Mandible,mandible
+HN_P023,ORAL CAVITY,oral_cavity
+HN_P023,Lparotid,parotid_gland_left
+HN_P023,Rparotid,parotid_gland_right
+HN_P024,Mandible,mandible
+HN_P024,ORAL CAVITY,oral_cavity
+HN_P024,Lparotid,parotid_gland_left
+HN_P024,Rparotid,parotid_gland_right
+HN_P026,Mandible,mandible
+HN_P026,ORAL CAVITY,oral_cavity
+HN_P026,Lparotid,parotid_gland_left
+HN_P026,Rparotid,parotid_gland_right
+HN_P027,Mandible,mandible
+HN_P027,Lparotid,parotid_gland_left
+HN_P027,Rparotid,parotid_gland_right
+HN_P027,Oral Cavity,oral_cavity
+HN_P028,Mandible,mandible
+HN_P028,ORAL CAVITY,oral_cavity
+HN_P028,Lparotid,parotid_gland_left
+HN_P028,Rparotid,parotid_gland_right
+HN_P029,Oral Cavity,oral_cavity
+HN_P029,Mandible,mandible
+HN_P029,Lparotid,parotid_gland_left
+HN_P029,Rparotid,parotid_gland_right
+HN_P029,Submandib_R,submandibular_gland_right
+HN_P029,Submandib_L,submandibular_gland_left
+HN_P030,Mandible,mandible
+HN_P030,ORAL CAVITY,oral_cavity
+HN_P030,Lparotid,parotid_gland_left
+HN_P030,Rparotid,parotid_gland_right
+HN_P032,Mandible,mandible
+HN_P032,ORAL CAVITY,oral_cavity
+HN_P032,Lparotid,parotid_gland_left
+HN_P032,Rparotid,parotid_gland_right
+HN_P033,Mandible,mandible
+HN_P033,Lparotid,parotid_gland_left
+HN_P033,Rparotid,parotid_gland_right
+HN_P034,CONSTRICTORSInf,inferior_pharyngeal_constrictor
+HN_P034,CONSTRICTORSSup,superior_pharyngeal_constrictor
+HN_P034,Mandible,mandible
+HN_P034,ORAL CAVITY,oral_cavity
+HN_P034,Lparotid,parotid_gland_left
+HN_P034,Rparotid,parotid_gland_right
+HN_P034,Submandibular_L,submandibular_gland_left
+HN_P034,Submandibular_R,submandibular_gland_right

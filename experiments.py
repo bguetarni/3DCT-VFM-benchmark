@@ -302,13 +302,13 @@ def run_experiment(cohort_path, features_path, exps, exp_code, verbose=False):
         for fts, names in exp_params["features"].items():
             if names == -1:
                 # keep all features belong to this type
-                pass
+                continue
             elif isinstance(names, list):
                     exp_df = exp_df.drop(exp_df[(exp_df["features"] == fts) & (~exp_df["name"].isin(names))].index)
             else:
                 raise TypeError()
 
-        # build X (input)
+        # build input
         X = exp_df.copy()
         X['features'] = X[['features', 'name']].agg('_'.join, axis=1)
         X = X.pivot(index="id", columns=["oar", "features"], values="value")

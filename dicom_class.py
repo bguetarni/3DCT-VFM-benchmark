@@ -1,11 +1,11 @@
 from abc import ABC
-import subprocess
 import os, pathlib
 from datetime import datetime
 import numpy as np
 import SimpleITK as sitk
 import pydicom
 import nibabel
+import dicom2nifti
 from totalsegmentator.python_api import totalsegmentator
 
 from dicom_utils import fill_vol_ctrs
@@ -49,12 +49,21 @@ class DICOM(ABC):
         if os.path.isdir(self.path):
             # if path is folder, take first file inside
             return os.path.join(self.path, os.listdir(self.path)[0])
-        else:
-            # else return path itself
+        elif self.path.endswith(".dcm") or self.path.endswith(".dicom"):
             return self.path
+        else:
+            raise FileNotFoundError(f"DICOM file not found with path {self.path}")
         
     def get_sitk_image(self):
-        return sitk.ReadImage(self.get_dcm_path())
+        try:
+            reader = sitk.ImageSeriesReader()
+            reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.path))
+            img = reader.Execute()
+        except RuntimeError:
+            img  = sitk.ReadImage(self.get_dcm_path())
+        
+        img = sitk.DICOMOrient(img, 'LAS')
+        return img
 
 
     def get_FrameOfReferenceUID(self):
@@ -159,38 +168,23 @@ class DICOM(ABC):
             path_ (str) path to nii file to save data
         """
 
-        # if file already exists, remove it so dcm2niix can overwrite
-        if os.path.isfile(path_):
-            os.remove(path_)
-
-        # remove extension as dcm2niix adds it by default
-        if path_.endswith(".nii.gz"):
-            path_ = path_.removesuffix(".nii.gz")
+        if not(path_.endswith(".nii.gz")):
+            path_ += ".nii.gz"
 
         # convert DICOM to Nifti
-        subprocess.call(["dcm2niix", "-z", "y", "-v", "0", "-o", pathlib.Path(path_).parent, "-f", pathlib.Path(path_).name, self.path])
+        dicom2nifti.dicom_series_to_nifti(self.path, path_, reorient_nifti=True)
 
 
 class Imaging(DICOM):
     def __init__(self, path):
         super().__init__(path)
-        self.nii = None
-
-    def convert2nifti(self, path_):
-        """
-        Convert DICOM data into a Nifti file
-
-        args:
-            path_ (str) path to nii file to save data
-        """
-
-        super().convert2nifti(path_)
-        self.nii = path_
 
     def get_sitk_image(self):
         reader = sitk.ImageSeriesReader()
         reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.path))
-        return reader.Execute()
+        img = reader.Execute()
+        img = sitk.DICOMOrient(img, 'LAS')
+        return img
 
 class CBCT(Imaging):
     def __init__(self, path):
@@ -291,7 +285,6 @@ class CT(Imaging):
                 os.remove(tmp_nii_input)
 
             self.convert2nifti(tmp_nii_input)
-            self.nii = tmp_nii_input
 
         # apply TotalSegmentator
         output = totalsegmentator(tmp_nii_input, task=task, quiet=True, verbose=False)
@@ -307,66 +300,40 @@ class RTDOSE(DICOM):
     def __init__(self, path):
         super().__init__(path)
 
-    def get_shape(self):
+    def convert2nifti(self, path_, align_to_ct=True):
         """
-        Return shape of scan image as (Z,H,W) where Z is the depth, H the height and W the width
-        """
-        return sitk.GetArrayFromImage(sitk.ReadImage(self.get_dcm_path())).shape
-    
-    def get_voxel_array(self):
-        """
-        Return dose voxel data
-        """
-
-        # raw DICOM voxel values must be scaled by DoseGridScaling to obtain dose values
-        DoseGridScaling = pydicom.dcmread(self.get_dcm_path()).DoseGridScaling
-
-        img = sitk.ReadImage(self.get_dcm_path())
-        return sitk.GetArrayFromImage(img) * DoseGridScaling
-
-    def get_structure_mask(self, name):
-        """
-        Return mask of contour on dose volume with shape (H,W,C)
-
-        Args:
-            name (str) name of contour as found in RTSTRUCT
-        """
-        assert not(self.parent is None), f"parent must be initialized first to compute mask of OAR {name}"
-        assert not(self.parent.rtstruct is None), f"parent.rtstruct must be initialized first to compute mask of OAR {name}"
-
-        # load contours of structure
-        contours = self.parent.rtstruct.get_contours(name, convert_to_voxel=False)
-
-        # convert contours to scpace
-        rtdose_image = sitk.ReadImage(self.get_dcm_path())
-        contours = np.array(list(map(rtdose_image.TransformPhysicalPointToIndex, contours.tolist())), dtype=np.int64)
-
-        # create mask
-        mask = fill_vol_ctrs(self.get_shape(), contours)
-
-        # if z axis is inverted, flip mask y-axis
-        if rtdose_image.GetDirection()[-1] < 0:
-            mask = np.flip(mask, axis=0)
-        
-        return mask
-    
-    def convert2nifti(self, path_):
-        """
-        Convert DICOM data into a Nifti file and adjust dose values
+        Convert DICOM data into a Nifti file while adjusting dose values
 
         args:
             path_ (str) path to nii file to save data
+            align_to_ct (bool) weiher to align the volume to CT
         """
+        reader = sitk.ImageFileReader()
+        reader.SetFileName(self.get_dcm_path())
+        reader.ReadImageInformation()
 
-        super().convert2nifti(path_)
+        DoseGridScaling = float(reader.GetMetaData("3004|000e"))
 
-        # apply scaling for valid dose values because DoseGridScaling parameter is lost afterwards
-        dose_image = sitk.ReadImage(path_)
-        dose_array = sitk.GetArrayFromImage(dose_image).astype("float")
-        dose_array *= float(pydicom.dcmread(self.get_dcm_path()).DoseGridScaling)
-        dose_image_scaled = sitk.GetImageFromArray(dose_array)
-        dose_image_scaled.CopyInformation(dose_image)
-        sitk.WriteImage(dose_image_scaled, path_)
+        dose = reader.Execute()
+
+        # IMPORTANT: to be compatible with the other data
+        ##################################################################
+        dose = sitk.DICOMOrient(dose, 'LAS')
+        ##################################################################
+
+        scaled_dose = sitk.GetArrayFromImage(dose) * DoseGridScaling
+        scaled_dose = sitk.GetImageFromArray(scaled_dose)
+        scaled_dose.CopyInformation(dose)
+
+        if align_to_ct:
+            # Resample dose to match CT volume
+            resampler = sitk.ResampleImageFilter()
+            resampler.SetReferenceImage(self.parent.get_sitk_image())
+            resampler.SetInterpolator(sitk.sitkLinear)
+            resampler.SetDefaultPixelValue(0)  # In case resampling introduces new pixels
+            scaled_dose = resampler.Execute(scaled_dose)
+
+        sitk.WriteImage(scaled_dose, path_)
 
 
 class RTSTRUCT(DICOM):
@@ -411,21 +378,19 @@ class RTSTRUCT(DICOM):
         except Exception:
             original_ctr = None
 
-        if not(original_ctr is None):
+        if original_ctr is None:
+            return None
+        else:
             original_ctr = np.asarray(original_ctr, dtype="int64")
             if convert_to_voxel:
                 if self.parent is None:
                     print("WARNING: cannot return contours as parent is not defined for reference to voxel space affine transformation")
                     return None
                 
-                reader = sitk.ImageSeriesReader()
-                reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.parent.path))
-                ct_image = reader.Execute()
+                ct_image = self.parent.get_sitk_image()                
                 original_ctr = np.array(list(map(ct_image.TransformPhysicalPointToIndex, original_ctr.tolist())), dtype=np.int64)
             
             return original_ctr
-        else:
-            return None
         
     def get_structure_mask(self, name):
         """
@@ -436,37 +401,7 @@ class RTSTRUCT(DICOM):
         """
         ctrs = self.get_contours(name)
         return fill_vol_ctrs(self.parent.get_shape(), ctrs)
-    
-    def create_nii_mask_oars(self, path_=None, oars=None):
-        """
-        Create a mask with labels as found in DICOM file similar to TotalSegmentator labeling.
-        If path_ is provided, save it into as a Nifti image
 
-        args
-            path_ (str) path to nifti file, if None return mask
-            oars (List[str]) list of oars to compute mask, if None compute for all OARs in RTSTRUCT
-        """
-
-        # initialize empty mask
-        mask = np.zeros(shape=self.parent.get_shape(), dtype=np.uint8)
-        
-        # read DICOM file
-        dcm = pydicom.dcmread(self.get_dcm_path())
-        
-        try:
-            for roi in dcm.StructureSetROISequence:
-                if isinstance(oars, list) and not(roi.ROIName in oars):
-                    continue
-
-                roi_mask = self.get_structure_mask(roi.ROIName)
-                mask[roi_mask] = roi.ROINumber
-        except Exception:
-            return None
-        
-        if path_:
-            sitk.WriteImage(sitk.GetImageFromArray(mask), path_)
-        else:
-            return mask
         
 class Patient:
     def __init__(self, id_, ct=[], cbct=[], clinical={}, clinical_measurements=[]):

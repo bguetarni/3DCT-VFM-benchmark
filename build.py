@@ -1,41 +1,27 @@
-import glob, os, tqdm, argparse, pickle
-from datetime import datetime
-import artix
-import hnscc3dctrt
+import os, argparse, pickle
+from dataloader import ARTIX, TCIA_HNSCC3DCTRT
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--overwrite', type=bool, default=True, help='weither to overwrite dataset if already existing')
     parser.add_argument('--input', type=str, required=True, help='path to dataset patients folder')
     parser.add_argument('--output', type=str, required=True, help='path to pickle file to save')
     parser.add_argument('--cohort', type=str, required=True, choices=["artix", "tcia"], help='which cohort to build (change for certain parts)')
     parser.add_argument('--id_map', type=str, default=None, help='path to xlsx file with ID mapping correlation for ARTIX')
     parser.add_argument('--clinical', type=str, required=True, help='path to clinical file or folder')
-    parser.add_argument('--save_freq', type=int, default=1, help='frequency (no of patients) to save')
     args = parser.parse_args()
 
-    data = []
-    all_patients_to_load = glob.glob(os.path.join(args.input, "*"))
-    for i, p in tqdm.tqdm(enumerate(all_patients_to_load), total=len(all_patients_to_load), ncols=50):
-        if not(os.path.isdir(p)):
-            continue
+    if os.path.exists(args.output) and not(args.overwrite):
+        print(f"WRNING: exiting because destination file already exists ({args.output}). To overwrite, set argument --overwrite to True")
 
-        if args.cohort == "artix":
-            p = artix.load_patient(path=p, id_map=args.id_map, clinical=args.clinical, log=f"./{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
-        elif args.cohort == "tcia":
-            p = hnscc3dctrt.load_patient(path=p, clinical=args.clinical, log=f"./{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
-        else:
-            continue
-        
-        # set base path
-        p.update_study_base_path(args.input)
+    if args.cohort == "artix":
+        loader = ARTIX(args.input, args.id_map)
+    elif args.cohort == "tcia":
+        loader = TCIA_HNSCC3DCTRT(args.input)
+    else:
+        raise ValueError(f"argument --cohort value not implemented: {args.cohort}")
 
-        data.append(p)
-        
-        if ((i+1) % args.save_freq) == 0:
-            print("saving in pkl..")
-            with open(args.output, "wb") as f:
-                pickle.dump(data, f)
-
+    data = loader.load(args.clinical)
     print(f"\n {len(data)} patients loaded")
 
     print("saving in pkl..")
