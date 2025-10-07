@@ -17,10 +17,21 @@ class BaseLoader:
             if not(os.path.isdir(p)):
                 continue
             
-            p = self.load_patient(self.path, clinical, log=f"./{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
+            p = self.load_patient(p, clinical, log=f"./{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
             p.update_study_base_path(self.path)
             data.append(p)
         return data
+    
+    def transform_(self, x):
+        if isinstance(x, str):
+            digits = re.findall("\d", x)
+            if len(digits) == 0:
+                return None
+            else:
+                return int(digits[0])
+        else:
+            return None
+
 
 class ARTIX(BaseLoader):
     # (0008, 0060) Modality
@@ -40,9 +51,24 @@ class ARTIX(BaseLoader):
     # 20241021_MDA_LTSI.cs
     # 20241021_TOX_GRADE_LTSI.cs
 
-    def __init__(self, path, id_map):
+    def __init__(self, path=None, id_map=None):
         super().__init__(path)
         self.id_map = id_map
+        self.CLINICAL_MAPPING = {
+            # SEX
+            "Male": 1,
+            "Female": 2,
+
+            # CANCER STAGING
+            "Stage III": 3,
+            "Stage IVa": 4,
+            "Stage IVb": 4,
+
+            # ECOG
+            "Asympatomatic": 0,
+            "Completely ambulatory": 1,
+            "lower than 50% in bed": 2,
+        }
 
     def generic_parsing(self, df, type, visitID_key, value_key=None, filter_pairs=None, sample_keys=None, sample_is_column=True):
         """
@@ -162,11 +188,12 @@ class ARTIX(BaseLoader):
 
         return data
 
-    def load_patient(self, clinical=None, log=None):
+    def load_patient(self, path_, clinical=None, log=None):
         """
         Load a patient folder and return images with dose and rtplan
 
         Args:
+            path_ (str) path to patient folder
             clinical (str) path to clinical fodler with csv files
             log (str) path to file to log warnings and errors
 
@@ -181,20 +208,20 @@ class ARTIX(BaseLoader):
                 level=logging.DEBUG)
             log = logging.getLogger()
 
-        id = pathlib.Path(self.path).name
+        id = pathlib.Path(path_).name
 
         # convert patient ID from folder to clinical data
         id_map = pandas.read_excel(self.id_map)
         id = int(id_map[id_map["My Identifier ID"] == float(id)]["USUBJID"].item())
         
         # load every DICOM data of patient folder
-        patient_data = self.load_folder(self.path)
+        patient_data = self.load_folder(path_)
 
         # print number of DICOM data loaded
         data_type = {k: len(list(filter(lambda i: isinstance(i, k), patient_data))) for k in set(map(type, patient_data))}
-        print(f"total data loaded from {self.path}")
-        for k, v in data_type.items():
-            print(f"{k}:\t {v}")
+        # print(f"total data loaded from {path_}")
+        # for k, v in data_type.items():
+        #     print(f"{k}:\t {v}")
 
         # group CT with dose
         for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
@@ -295,8 +322,74 @@ class ARTIX(BaseLoader):
             clinical_measurements=clinical_measurements,
         )
     
+    def load_clinical(self, patient):
+        try:
+            sex = self.CLINICAL_MAPPING[patient.clinical['SEX']]
+        except (KeyError, ValueError):
+            sex = None
+
+        try:
+            age = self.CLINICAL_MAPPING[patient.clinical['AGE']]
+        except (KeyError, ValueError):
+            age = None
+
+        try:
+            stage = self.CLINICAL_MAPPING[patient.clinical['ST_STAG']]
+        except (KeyError, ValueError):
+            stage = None
+
+        try:
+            ecog = self.CLINICAL_MAPPING[patient.clinical['ECOG']]
+        except (KeyError, ValueError):
+            ecog = None
+
+        # select xerostomia in CTCAE
+        # transform values
+        # change S0 into Inclusion
+        # if patient has baseline tox, set label to None
+        # keep only M6 grade
+        cm = pandas.DataFrame(patient.clinical_measurements)
+        cm = cm[(cm["type"] == "AE") & (cm["sample"] == "XEROSTOMIE")]
+        cm["value"] = cm["value"].apply(self.transform_)
+        cm.loc[(cm["visitID"] == "S0"), "visitID"] = "Inclusion"
+        if (cm[(cm["visitID"] == "Inclusion") & (cm["sample"] == "XEROSTOMIE")]["value"].astype('Int64') > 0).any():
+            # exclude patient because xerstomia baseline present
+            xerostomia = None
+        else:
+            try:
+                cm = cm[cm["visitID"] == "M6"]
+                xerostomia = int(cm["value"].values[0])
+                xerostomia = 0 if xerostomia < 2 else 1
+            except (IndexError, ValueError):
+                xerostomia = None
+
+        return {'sex': sex, 'age': age, 'stage': stage, 'ecog': ecog, "xerostomia": xerostomia}
+    
 
 class TCIA_HNSCC3DCTRT(BaseLoader):
+    def __init__(self, path=None):
+        super().__init__(path)
+        self.CLINICAL_MAPPING = {
+            # SEX
+            "M": 1,
+            "F": 2,
+
+            # CANCER STAGING
+            'I': 1,
+            'II': 2,
+            'IIA': 2,
+            'IIB': 2,
+            'III': 3,
+            'IVA': 4,
+
+            # ECOG
+            'ECOG 0': 0,
+            'ECOG 0-1': 0,
+            'ECOG 0-2': 0,
+            'ECOG 0-3': 0,
+            'ECOG 1': 1,
+            'ECOG 1-2': 1,
+        }
 
     def load_folder(self, path):
         """
@@ -362,9 +455,9 @@ class TCIA_HNSCC3DCTRT(BaseLoader):
 
         # print number of DICOM data loaded
         data_type = {k: len(list(filter(lambda i: isinstance(i, k), patient_data))) for k in set(map(type, patient_data))}
-        print(f"total data loaded from {path}")
-        for k, v in data_type.items():
-            print(f"{k}:\t {v}")
+        # print(f"total data loaded from {path}")
+        # for k, v in data_type.items():
+        #     print(f"{k}:\t {v}")
 
         # group CT with dose
         for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
@@ -403,3 +496,32 @@ class TCIA_HNSCC3DCTRT(BaseLoader):
             cbct=list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
             clinical=clinical_d,
         )
+    
+    def load_clinical(self, patient):
+        try:
+            sex = self.CLINICAL_MAPPING[patient.clinical['Sex']]
+        except (KeyError, ValueError):
+            sex = None
+
+        try:
+            age = self.CLINICAL_MAPPING[patient.clinical['Age']]
+        except (KeyError, ValueError):
+            age = None
+
+        try:
+            stage = self.CLINICAL_MAPPING[patient.clinical['Cancer Staging']]
+        except (KeyError, ValueError):
+            stage = None
+
+        try:
+            ecog = self.CLINICAL_MAPPING[patient.clinical['ECOG']]
+        except (KeyError, ValueError):
+            ecog = None
+
+        try:
+            xerostomia = int(patient.clinical['Xerostomia Grade'])
+            xerostomia = 0 if xerostomia < 2 else 1
+        except ValueError:
+            xerostomia = None
+
+        return {'sex': sex, 'age': age, 'stage': stage, 'ecog': ecog, "xerostomia": xerostomia}

@@ -65,7 +65,6 @@ class DICOM(ABC):
         img = sitk.DICOMOrient(img, 'LAS')
         return img
 
-
     def get_FrameOfReferenceUID(self):
         """
         Return FrameOfReferenceUID tag of DICOM file/folder if available, otherwise return None

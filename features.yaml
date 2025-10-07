@@ -1,0 +1,17 @@
+code: 015
+experiments:
+- clinical: []
+  deepnn: []
+  dosiomics: []
+  dvh: []
+  radiomics: -1
+- clinical: []
+  deepnn: -1
+  dosiomics: []
+  dvh: []
+  radiomics: []
+- clinical: []
+  deepnn: []
+  dosiomics: []
+  dvh: -1
+  radiomics: []

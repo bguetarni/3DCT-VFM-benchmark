@@ -129,10 +129,10 @@ def compute_radiomics_generic(nii_path, mask_path, oars, radiomics_yaml):
         try:
             featureVector = extractor.execute(nii_path, mask_path, label=id_, label_channel=0)
             for fname, fvalue in featureVector.items():
-                type_, class_, name_ = fname.split("_")
+                _, class_, _ = fname.split("_")
                 if class_ == "diagnostics":
                     continue
-                features.append({"oar": name, "type": type_, "class": class_, "name": name_, "value": fvalue})
+                features.append({"oar": name, "name": fname, "value": fvalue})
         except ValueError:
             continue
     return features
@@ -302,14 +302,14 @@ if __name__ == "__main__":
             print("computing radiomics...")
             fts = compute_radiomics_generic(CT_NII_PATH, CT_MASK_PATH, oars, args.radiomics)
             for d in fts:
-                d.update({"modality": "radiomics", "patient": str(p.id)})
+                d.update({"features": "radiomics", "patient": str(p.id)})
             features.extend(fts)
 
         if args.dosiomics and ct.rtdose:
             print("computing dosiomics...")
             fts = compute_radiomics_generic(DOSE_NII_PATH, DOSE_MASK_PATH, oars, args.dosiomics)
             for d in fts:
-                d.update({"modality": "dosiomics", "patient": str(p.id)})
+                d.update({"features": "dosiomics", "patient": str(p.id)})
             features.extend(fts)
 
         if args.dvh and ct.rtdose:
@@ -352,7 +352,7 @@ if __name__ == "__main__":
                 }
 
                 for k, v in dvh.items():
-                    features.append({"oar": oar_name, "name": k, "value": v, "modality": "dvh", "patient": str(p.id)})
+                    features.append({"oar": oar_name, "name": k, "value": v, "features": "dvh", "patient": str(p.id)})
 
         if args.deepNN:
             print("computing deep nn features...")            
@@ -424,7 +424,7 @@ if __name__ == "__main__":
                 # convert features to numpy and add to features list
                 fts = output.squeeze().cpu().numpy().flatten()
                 for i, f in enumerate(fts):
-                    features.append({"oar": oar_name, "name": i, "value": f, "modality": f"deepnn({args.deepNN})", "patient": str(p.id)})
+                    features.append({"oar": oar_name, "name": i, "value": f, "features": f"deepnn({args.deepNN})", "patient": str(p.id)})
 
     # save to csv
     pandas.DataFrame(features).to_csv(args.output)

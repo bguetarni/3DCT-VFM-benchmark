@@ -1,14 +1,15 @@
-import os, itertools, re, pickle, json, copy
+import os, re, pickle, json, argparse, yaml
 import pandas
-from sklearn.model_selection import KFold, ShuffleSplit
+import numpy as np
+import tqdm
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, precision_score, recall_score, f1_score, log_loss, confusion_matrix
+from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, f1_score, log_loss, confusion_matrix
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import scale, minmax_scale
 from sklearn.utils.multiclass import unique_labels
-import numpy as np
-import tqdm
 from radiomics import getFeatureClasses
+
+from dataloader import ARTIX, TCIA_HNSCC3DCTRT
 
 def zero_division(num, den):
     try:
@@ -20,147 +21,26 @@ def zero_division(num, den):
         return 0
 
 
-def transform_(x):
-    if isinstance(x, str):
-        digits = re.findall("\d", x)
-        if len(digits) == 0:
-            return None
-        else:
-            return int(digits[0])
-    else:
-        return None
+def build_dataset(internal_data, external_data, internal_features, external_features, combined_path):
+    print("loading cohorts...")
+    df = pandas.DataFrame([])
+    for loader, data, features, cohort in ((ARTIX(), internal_data, internal_features, "internal"), 
+                                           (TCIA_HNSCC3DCTRT(), external_data, external_features, "external")):
+        
+        features = pandas.read_csv(features)
+        features["cohort"] = cohort
+        
+        with open(data, "rb") as f:
+            patients = pickle.load(f)
 
+        for p in patients:
+            patient_df = []
+            for k, v in loader.load_clinical(p).items():
+                patient_df.append({"cohort": cohort, "features": "clinical", "name": k, "value": v, "id": p.id})
 
-def load_features(path_, type_, patient_id, columns_to_keep=["oar", "name", "value"]):
-    """
-    load features
-
-    args:
-        path_ (str) path to features folder
-        type_ (str) features type (radiomics, dosiomics, dvh, deepnn)
-        patient_id (int,str) id of patient to find its folder
-        columns_to_keep (list(str)) list of columns name to keep
-    """
-    patient_folder = os.path.join(path_, [i for i in os.listdir(path_) if int(i) == int(patient_id)][0])
-    features = pandas.read_csv(os.path.join(patient_folder, f"{type_}.csv"))
-
-    if "Unnamed: 0" in features.columns:
-        features = features.drop(columns=["Unnamed: 0"])
-
-    if columns_to_keep:
-        features = features[columns_to_keep]
-
-    return features
-
-def load_radiomics(path_, patient_id, omics):
-    """
-    omics (radiomics, dosiomics)
-    """
-    assert omics in ["radiomics", "dosiomics"]
-    df = load_features(path_, omics, patient_id, columns_to_keep=None)
-    df = df[(df["type"] == "original")]
-    df['name'] = df[["type", "class", "name"]].apply(lambda row: '_'.join(row.values.astype(str)), axis=1)
-    return df.drop(columns=["type", "class"])
-
-
-def build_dataset(cohort_path, features_path, combined_path):
-    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! adapt this for TCIA 
-    clinical = ['SEX', 'AGE', 'ST_STAG', 'ECOG']
-    CLINICAL_MAPPING = {
-        # SEX
-        "Male": 1,
-        "Female": 2,
-        # "M": 1,
-        # "F": 2,
-
-        # CANCER STAGING
-        "Stage III": 1,
-        "Stage IVa": 2,
-        "Stage IVb": 3,
-
-        # ECOG
-        "Asympatomatic": 0,
-        "Completely ambulatory": 1,
-        "lower than 50% in bed": 2,
-    }
-
-    print("loading cohort...")
-    with open(cohort_path, "rb") as f:
-        patients = pickle.load(f)
-
-    print("building dataset...")
-    df = []
-    for p in patients:
-        patient_df = []
-
-        for k in clinical:
-            try:
-                patient_df.append({"features": "clinical", "name": k, "value": int(p.clinical[k]), "id": int(p.id)})
-            except ValueError:
-                patient_df.append({"features": "clinical", "name": k, "value": CLINICAL_MAPPING[p.clinical[k]], "id": int(p.id)})
-
-        # select xerostomia in CTCAE
-        # transform values
-        # change S0 into Inclusion
-        # if patient has baseline tox, skip it
-        # keep only M6 grade
-        cm = pandas.DataFrame(p.clinical_measurements)
-        cm = cm[(cm["type"] == "AE") & (cm["sample"] == "XEROSTOMIE")]
-        cm["value"] = cm["value"].apply(transform_)
-        cm.loc[(cm["visitID"] == "S0"), "visitID"] = "Inclusion"
-        if (cm[(cm["visitID"] == "Inclusion") & (cm["sample"] == "XEROSTOMIE")]["value"].astype('Int64') > 0).any():
-            continue
-        cm = cm[cm["visitID"] == "M6"]
-
-        # transform tox value to binary
-        cm.loc[(cm["value"] < 2), "value"] = 0
-        cm.loc[(cm["value"] >= 2), "value"] = 1
-
-        for _, row in cm.iterrows():
-            patient_df.append({"features": "clinical", "name": row["sample"], "value": row["value"], "id": int(p.id)})
-
-        try:
-            # radiomics
-            radiomics = load_radiomics(features_path, p.id, "radiomics")
-            radiomics["id"] = int(p.id)
-            radiomics["features"] = "radiomics"
-            patient_df.extend(radiomics.to_dict(orient="records"))
-        except (FileNotFoundError, IndexError):
-            print(f"WARNING: patient {p.id} missing radiomics data")
-            continue
-
-        try:
-            # dosiomics
-            dosiomics = load_radiomics(features_path, p.id, "dosiomics")
-            dosiomics["id"] = int(p.id)
-            dosiomics["features"] = "dosiomics"
-            patient_df.extend(dosiomics.to_dict(orient="records"))
-        except (FileNotFoundError, IndexError):
-            print(f"WARNING: patient {p.id} missing dosiomics data")
-            continue
-
-        try:
-            # dvh
-            dvh = load_features(features_path, "dvh", p.id)
-            dvh["id"] = int(p.id)
-            dvh["features"] = "dvh"
-            patient_df.extend(dvh.to_dict(orient="records"))
-        except (FileNotFoundError, IndexError):
-            print(f"WARNING: patient {p.id} missing dvh data")
-            continue
-
-        try:
-            # deepnn
-            for name_ in ("deepnn", "deepnn(fmcib)"):
-                deepnn = load_features(features_path, name_, p.id)
-                deepnn["id"] = int(p.id)
-                deepnn["features"] = name_
-                patient_df.extend(deepnn.to_dict(orient="records"))
-        except (FileNotFoundError, IndexError):
-            print(f"WARNING: patient {p.id} missing deepnn data")
-            continue
-
-        df.extend(patient_df)
+            features = pandas.concat((features, pandas.DataFrame(patient_df)))
+        
+        df = pandas.concat((df, features))
 
     print("saving dataset...")
     pandas.DataFrame(df).to_csv(combined_path, index=False)
@@ -171,132 +51,117 @@ def display_split_stats(split):
     for j, c in stats.items():
         print(f"\t {j}: {c} ({int(100*c/len(split))}%)")
 
-def cross_validation(X, Y, normalization="minmax", kfold=3, bootstrap=None, feature_selection=None, feature_reduction_N=None, verbose=False):
+def cross_validation(X_internal, Y_internal, X_external, Y_external, normalization="minmax", bootstrap=None, feature_selection=None, feature_reduction_N=None):
     """
-    Perform cross validation training and return classification metrics as dict
+    Perform boostrap training and testing and return classification metrics as dict
 
     args
-        X (numpy.ndarray) training data input of shape (n_samples, n_features)
-        Y (numpy.ndarray) training data expected output of shape (n_samples)
+        X_ (internal, external) (numpy.ndarray) data input of shape (n_samples, n_features)
+        Y_ (internal, external) (numpy.ndarray) data expected output of shape (n_samples)
         normalization (str) method for normalizing input data
-        kfold (int) number of folds default is 3
         bootstrap (int) number of time to eprform the training with random splitting, if None apply k-fold
         feature_selection (str) feature selection method to apply (see sklearn)
         feature_reduction_N (int) number of dimension to reduce data into using PCA
     """
 
-    if bootstrap:
-        splitter = ShuffleSplit(n_splits=bootstrap, random_state=0, test_size=0.3)
-    else:
-        splitter = KFold(n_splits=kfold)
+    def compute_metrics(y_pred, y_pred_proba, y):
+        tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
+        m = {"acc": accuracy_score(y, y_pred),
+             "auc": roc_auc_score(y, y_pred),
+             "balanced_accuracy": balanced_accuracy_score(y, y_pred),
+             "f1_score": f1_score(y, y_pred, zero_division=0),
+             "specificity": zero_division(tn, (tn + fp)),
+             "sensitivity": zero_division(tp, (tp + fn)),
+             "log_loss": log_loss(y, y_pred_proba)}
+        return m
+
+    print("Y internal stat:")
+    print(display_split_stats(Y_internal))
+    print("Y external stat:")
+    print(display_split_stats(Y_external))
+
+    if not bootstrap:
+        bootstrap = 1
 
     metrics = []
-    reductor = []
-    for i, (train_index, test_index) in enumerate(splitter.split(X)):
-        x_train, y_train = X[train_index], Y[train_index]
-        x_test, y_test = X[test_index], Y[test_index]
-
-        if unique_labels(y_train).size == 1 or unique_labels(y_test).size == 1:
+    for i in tqdm.trange(bootstrap):
+        if unique_labels(Y_internal).size == 1 or unique_labels(Y_external).size == 1:
             print("WARNING: skipping bootstrap step due to unique label in y_train or y_test")
             continue
 
         # normalize features separatly (to avoid data leakage)
         if normalization == "minmax":
-            x_train = minmax_scale(x_train, axis=0)
-            x_test = minmax_scale(x_test, axis=0)
+            X_internal = minmax_scale(X_internal, axis=0)
+            X_external = minmax_scale(X_external, axis=0)
         else:
-            x_train = scale(x_train, axis=0)
-            x_test = scale(x_test, axis=0)
-
-        if verbose:
-            if bootstrap:
-                print("bootstrap ", i+1)
-            else:
-                print("fold ", i+1)
-            print("train:")
-            display_split_stats(y_train)
-            print("test:")
-            display_split_stats(y_test)
+            X_internal = scale(X_internal, axis=0)
+            X_external = scale(X_external, axis=0)
 
         if feature_selection:
             raise NotImplementedError() #TODO
 
         if feature_reduction_N:
-            if 0 < feature_reduction_N and feature_reduction_N < min(X.shape):
-                if verbose:
-                    print(f"transforming input from {x_train.shape[1]} to {feature_reduction_N} dimensions..")
+            if 0 < feature_reduction_N and feature_reduction_N < min(X_internal.shape):
                 reduc = PCA(n_components=feature_reduction_N, random_state=0)
-                reduc.fit(x_train)
-                x_train = reduc.transform(x_train)
-                x_test = reduc.transform(x_test)
-                reductor.append(reduc)
+                reduc.fit(X_internal)
+                X_internal = reduc.transform(X_internal)
+                X_external = reduc.transform(X_external)
             else:
-                if verbose:
-                    print(f"input cannot be transformed {x_train.shape[1]} to {feature_reduction_N} dimensions since final dimension must be between 0 and min(n_samples, n_features)={min(X.shape)}")
+                # print(f"input cannot be transformed {X_internal.shape[1]} to {feature_reduction_N} dimensions since final dimension must be between 1 and min(n_samples, n_features)={min(X_internal.shape)}")
+                pass
 
         try:
-            clf = LogisticRegression(random_state=0, verbose=0)
-            clf.fit(x_train, y_train)
-            y_pred = clf.predict(x_test)
-            y_pred_proba = clf.predict_proba(x_test)
+            clf = LogisticRegression(verbose=0)
+            clf.fit(X_internal, Y_internal)
 
-            tn, fp, fn, tp = confusion_matrix(y_test, y_pred).ravel()
+            y_pred_internal = clf.predict(X_internal)
+            y_pred_proba_internal = clf.predict_proba(X_internal)
 
-            metrics.append({
-                "acc": accuracy_score(y_test, y_pred),
-                "auc": roc_auc_score(y_test, y_pred),
-                "balanced_accuracy": balanced_accuracy_score(y_test, y_pred),
-                "f1_score": f1_score(y_test, y_pred, zero_division=0),
-                "specificity": zero_division(tn, (tn + fp)),
-                "sensitivity": zero_division(tp, (tp + fn)),
-                "log_loss": log_loss(y_test, y_pred_proba),
-            })
+            y_pred_external = clf.predict(X_external)
+            y_pred_proba_external = clf.predict_proba(X_external)
+
+            internal_metrics = compute_metrics(y_pred_internal, y_pred_proba_internal, Y_internal)
+            external_metrics = compute_metrics(y_pred_external, y_pred_proba_external, Y_external)
+            metrics.append((internal_metrics, external_metrics))
         except ValueError:
             print("ValueError occured during model training or test")
             continue
 
-    return metrics, reductor
+    return metrics
 
 
-def run_experiment(cohort_path, features_path, exps, exp_code, verbose=False):
+def run_experiment(internal_data, external_data, internal_features, external_features, exps, exp_code_, output):
     """
-    Train LR model for classification
-
     args
-        cohort_path (str) path to cohort pickle file
-        features_path (str) path to folder containing features
-        exps (List(dict)) list of dictionnaries containing experiments parameters
-        exp_code (str) if of experiment as str
-        verbose (bool) weither to print informations
+        #TODO
     """
     combined_path = "./dataset.csv"
-    build_dataset(cohort_path, features_path, combined_path)
+    build_dataset(internal_data, external_data, internal_features, external_features, combined_path)
     df = pandas.read_csv(combined_path)
+    df["id"] = df["id"].astype("str")
 
-    if verbose:
-        print("filtering patients...")
+    print("filtering patients...")
 
     # filter patients without xerostomia label
-    # add patients without any XEROSTOMIA line
-    subdf = df[df["name"] == "XEROSTOMIE"]
+    subdf = df[df["name"] == "xerostomia"]
     subdf = subdf[pandas.isna(subdf["value"])]
-    patients_to_exclude = list(subdf["id"].unique())
-    subdf = df[df["name"] == "XEROSTOMIE"]
-    patients_to_exclude.extend(list(set(set(df["id"].unique()).difference(subdf["id"].unique()))))
-    df = df[~df["id"].isin(patients_to_exclude)]
-    if verbose:
-        print("patients excluded due to absent xerostomia label: ", len(patients_to_exclude))
-        print("number of patients remaning: ", len(df["id"].unique()))
+    df = df[~df["id"].isin(subdf["id"].unique())]
+    print("number of patients remaning: ", len(df["id"].unique()))
 
-    for i, exp_params in enumerate(tqdm.tqdm(exps)):
+    for i, exp_params in enumerate(exps):
+        print(f"running experiment {i+1}/{len(exps)}")
+
         # create experience name
-        exp_name = f"{exp_code}_{str(i+1)}"
+        exp_name = f"{exp_code_}_{str(i+1)}"
 
         # select data containing OARs; clinical features must be added because they would be lost after that
         # features filtering comes after
-        # remove xerostomia information (target to predict)
+        if not isinstance(exp_params["oars"], (list, tuple)):
+            exp_params["oars"] = [exp_params["oars"]]
         exp_df = df[(df["oar"].isin(exp_params["oars"])) | (df["features"] == "clinical")]
-        exp_df = exp_df.drop(exp_df[exp_df["name"] == "XEROSTOMIE"].index)
+
+        # remove xerostomia information (target to predict)
+        exp_df = exp_df.drop(exp_df[exp_df["name"] == "xerostomia"].index)
 
         # select features
         for fts, names in exp_params["features"].items():
@@ -308,90 +173,104 @@ def run_experiment(cohort_path, features_path, exps, exp_code, verbose=False):
             else:
                 raise TypeError()
 
-        # build input
-        X = exp_df.copy()
+        # build X (input)
+        X = exp_df.copy(deep=True)
         X['features'] = X[['features', 'name']].agg('_'.join, axis=1)
-        X = X.pivot(index="id", columns=["oar", "features"], values="value")
-        features = list(X.columns.values)  # features names must be saved in JSON to recover the order later
+        X = X[["id", "features", "oar", "value", "cohort"]]
+
+        internal_patient_id = X[X["cohort"] == "internal"]["id"].unique()
+        external_patient_id = X[X["cohort"] == "external"]["id"].unique()
+
+        # tranform values to float (handle nan)
+        # merge OARs features
+        point_float_pattern = r"-?\d+\.\d+|-?\d+"
+        convert_float = lambda i: float(re.findall(point_float_pattern, i)[0])
+        X["value"] = X["value"].apply(convert_float).astype("float32")
+        square_mean = lambda x: np.sqrt(np.square(x).sum())
+        X = X.groupby(["id", "features", "cohort"], as_index=False)["value"].apply(square_mean)
+
+        # reshape dataframe and drop patients with nan values
+        # TODO features completion
+        X = X.pivot(index="id", columns="features", values="value")
         index_n_prev = len(X.index)
         X = X.dropna(axis="index")
-        patients = X.index.values   # IMPORTANT: to build Y
-        if verbose:
-            print("removing patients because missing OAR or feature: ", index_n_prev - len(X.index))
-            print("number of patients remaning: ", len(X.index))
-            print("features: ", features)
+        
+        print("removing patients because missing OAR or feature: ", index_n_prev - len(X.index))
+        print("number of patients remaning: ", len(X.index))
+
+        # split into training and testing data
+        internal_patient_id = [i for i in internal_patient_id if i in list(X.index.values)]
+        external_patient_id = [i for i in external_patient_id if i in list(X.index.values)]
+        X_internal = X.loc[internal_patient_id]
+        X_external = X.loc[external_patient_id]
 
         # build Y
-        # !!! this must be done on original DataFrame because toxicity value is filtered in exp dataframe
-        Y = df[df["name"] == "XEROSTOMIE"].pivot(index="id", columns="name", values="value").loc[patients, "XEROSTOMIE"]
+        # this must be done on original DataFrame because toxicity value is filtered in exp dataframe
+        Y_internal = df[df["name"] == "xerostomia"].pivot(index="id", columns="name", values="value").loc[X_internal.index.values, "xerostomia"]
+        Y_external = df[df["name"] == "xerostomia"].pivot(index="id", columns="name", values="value").loc[X_external.index.values, "xerostomia"]
 
         # convert to numpy arrays
-        try:
-            X = np.array(X, dtype=np.float32)
-        except ValueError:
-            # in case values in X are not composed of numbers only
-            f = lambda i: re.findall("\d+", i)[0]
-            X = np.vectorize(f)(X).reshape(X.shape)
-            X = np.array(X, dtype=np.float32)
-        Y = np.array(Y, dtype=np.float16).astype(dtype=np.int16)
+        X_internal = np.array(X_internal)
+        X_external = np.array(X_external, dtype=np.float32)
+        Y_internal = np.array(Y_internal, dtype=np.float16).astype(dtype=np.int16)
+        Y_external = np.array(Y_external, dtype=np.float16).astype(dtype=np.int16)
 
-        if verbose:
-            print("X shape: ", X.shape)
-            print("Y shape: ", Y.shape)
+        print("X internal shape: ", X_internal.shape)
+        print("Y internal shape: ", Y_internal.shape)
+        print()
+        print("X external shape: ", X_external.shape)
+        print("Y external shape: ", Y_external.shape)
 
         # fit model
-        if verbose:
-            print("fitting model")
-
-        if exp_params["bootstrap"]:
-            metrics, _ = cross_validation(X, Y, normalization=exp_params["normalization"], bootstrap=exp_params["bootstrap"], feature_reduction_N=exp_params["feature_reduction_N"], verbose=verbose)
-        else:
-            metrics, _ = cross_validation(X, Y, normalization=exp_params["normalization"], kfold=exp_params["kfold"], feature_reduction_N=exp_params["feature_reduction_N"], verbose=verbose)
+        print("fitting model")
+        metrics = cross_validation(X_internal, Y_internal, X_external, Y_external, 
+                                   normalization=exp_params["normalization"], bootstrap=exp_params["bootstrap"], 
+                                   feature_reduction_N=exp_params["feature_reduction_N"])
+        
+        internal_metrics, external_metrics = zip(*metrics)
 
         # save results
-        out_dir = os.path.join("./experiments", exp_code, exp_name)
+        out_dir = os.path.join(output, exp_code_, exp_name)
         os.makedirs(out_dir, exist_ok=True)
-        pandas.DataFrame(metrics).to_csv(os.path.join(out_dir, "metrics.csv"))
+        pandas.DataFrame(internal_metrics).to_csv(os.path.join(out_dir, "internal_metrics.csv"))
+        pandas.DataFrame(external_metrics).to_csv(os.path.join(out_dir, "external_metrics.csv"))
 
         # save exp params
         with open(os.path.join(out_dir, "params.json"), "w") as f:
-            save_params = {**exp_params, "features_ordered": features}
-            json.dump(save_params, f)
-
+            json.dump(exp_params, f)
 
 def list_radiomics(type_):
     features = getFeatureClasses()[type_].getFeatureNames().keys()
     return [f"original_{type_}_{i}" for i in features]
 
-
 if __name__ == "__main__":
-    OARS = {"original": ["parotid_gland_ipsi", "parotid_gland_contra", "submandibular_gland_ipsi", "submandibular_gland_contra", "mandible", "oral_cavity"],
-            "totalseg": ["parotid_gland_left", "parotid_gland_right", "submandibular_gland_right", "submandibular_gland_left", "mandible"]}
-
-    exp_code = "013"
-    cohort_path = r"C:\Users\bilel.guetarni\Desktop\ARTIX\data\artix.pkl"
-
-    base_params = {"oars": [], "features": {"clinical": [], "radiomics": [], "dosiomics": [], "dvh": [], "deepnn": [], "deepnn(fmcib)": -1},
-                "feature_reduction_N": None, "normalization": "minmax", "bootstrap": 100, "kfold": 3}
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--internal_data', type=str, required=True, help='path to internal data pickle file')
+    parser.add_argument('--external_data', type=str, required=True, help='path to external data pickle file')
+    parser.add_argument('--internal_features', type=str, required=True, help='path to internal data features (csv)')
+    parser.add_argument('--external_features', type=str, required=True, help='path to external data features (csv)')
+    parser.add_argument('--output', type=str, required=True, help='path to save results')
+    parser.add_argument('--exp_yaml', type=str, required=True, help='path to yaml file containing experiment parameters')
+    parser.add_argument('--feature_reduction_N', type=int, default=10, help='number of dimensions to reduce feature vector')
+    parser.add_argument('--bootstrap', type=int, default=100, help='number of bootstraps')
+    parser.add_argument('--normalization', type=str, default="minmax", help='normalization method to apply to features')
+    args = parser.parse_args()
     
-    i = 0
-    for features_path, seg_origin in [(r"C:\Users\bilel.guetarni\Desktop\ARTIX\features\original\artix", "original"),
-                                      (r"C:\Users\bilel.guetarni\Desktop\ARTIX\features\totalsegmentator\artix", "totalseg")]:
-        print(seg_origin)
-        exps = []
-        for oars in OARS[seg_origin]:
-            for feature_reduction_N in [None, 10, 50, 100]:
-                for features in [
-                    {},
-                    {"dvh": ["mean"]},
-                ]:
-                    base_params_copy = copy.deepcopy(base_params)
-                    base_params_copy["oars"] = [oars]
-                    base_params_copy["feature_reduction_N"] = feature_reduction_N
-                    for k, v in features.items():
-                        base_params_copy["features"][k] = v
-                    exps.append(base_params_copy)
-        exp_code_ = f"{exp_code}_{str(i).zfill(3)}"
-        run_experiment(cohort_path, features_path, exps, exp_code_, verbose=False)
-        i += 1
-    print("Done.")
+    list_of_oars = [("parotid_gland_left", "parotid_gland_right"), 
+                    ("submandibular_gland_right", "submandibular_gland_left"), 
+                    ("mandible")]
+    
+    with open(args.exp_yaml, 'r') as file:
+        features = yaml.safe_load(file)
+
+    exp_code = str(features["code"]).zfill(3)
+    features = features["experiments"]
+
+    exps = []
+    for oars in list_of_oars:
+        for fts in features:
+            exp_params = dict(oars=oars, features=fts, feature_reduction_N=args.feature_reduction_N, 
+                              bootstrap=args.bootstrap, normalization=args.normalization)
+            exps.append(exp_params)
+    run_experiment(args.internal_data, args.external_data, args.internal_features, args.external_features, exps, exp_code, output=args.output)
+    print("done.")
