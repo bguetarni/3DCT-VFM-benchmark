@@ -5,7 +5,6 @@ from scipy.ndimage.morphology import binary_fill_holes
 from scipy.signal import find_peaks
 from skimage.filters import threshold_otsu, gaussian
 from skimage.transform import radon
-
 from radiomics import featureextractor
 import nibabel
 from rt_utils import RTStructBuilder
@@ -22,15 +21,11 @@ except ModuleNotFoundError:
     print("WARNING: module pydicom version error, if SegResEncoder to import use another env")
     pass
 
-try:
-    from fmcib.models import fmcib_model
-except ModuleNotFoundError:
-    print("WARNING: module pydicom version error, if fmcib_model to import use another env")
-    pass
-
-
-# patients 046 and 260 do not have an RTDOSE with CT0/A0, they have to be excluded
-# see if instead, CT1 can be used (if it has an RTDOSE)
+# try:
+#     from fmcib.models import fmcib_model
+# except ModuleNotFoundError:
+#     print("WARNING: module pydicom version error, if fmcib_model to import use another env")
+#     pass
 
 
 def create_mask_original(dicom_obj, mask_path, oars_map, p_id):
