@@ -8,7 +8,7 @@ set GPU=1
 set OARSOURCE=totalsegmentator
 set ARTIXBUILD="C:\Users\bilel.guetarni\Desktop\SEQ-RT\artix.pkl"
 set HNSCCBUILD="C:\Users\bilel.guetarni\Desktop\SEQ-RT\hnscc.pkl"
-set TMPFOLDER="C:\Users\bilel.guetarni\Desktop\tmp"
+set TMPFOLDER="C:\Users\bilel.guetarni\Desktop\SEQ-RT\tmp"
 set RADIOMICSYAML="C:\Users\bilel.guetarni\Desktop\SEQ-RT\radiomics.yaml"
 set DOSIOMICSYAML="C:\Users\bilel.guetarni\Desktop\SEQ-RT\dosiomics.yaml"
 
@@ -17,8 +17,8 @@ set HNSCCOUTPUT="C:\Users\bilel.guetarni\Desktop\SEQ-RT\features\hnscc_%OARSOURC
 
 :: build datasets
 echo "building datasets"
-python build.py --overwrite --input "C:\Users\bilel.guetarni\Desktop\data\ARTIX\DICOM_ARTIX_data" --output %ARTIXBUILD% --cohort artix --id_map "C:\Users\bilel.guetarni\Desktop\data\ARTIX\ARTIX_ID_CORRELATION.xlsx" --clinical "C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data"
-python build.py --overwrite --input "C:\Users\bilel.guetarni\Desktop\data\TCIA\HNSCC-3DCT-RT\manifest-1549495779734\HNSCC-3DCT-RT" --output %HNSCCBUILD% --cohort tcia --clinical "C:\Users\bilel.guetarni\Desktop\data\TCIA\HNSCC-3DCT-RT\TCIA 3-6M CTCAE grade.xlsx"
+python build.py --input "C:\Users\bilel.guetarni\Desktop\data\ARTIX\DICOM_ARTIX_data" --output %ARTIXBUILD% --cohort artix --id_map "C:\Users\bilel.guetarni\Desktop\data\ARTIX\ARTIX_ID_CORRELATION.xlsx" --clinical "C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data"
+python build.py --input "C:\Users\bilel.guetarni\Desktop\data\TCIA\HNSCC-3DCT-RT\manifest-1549495779734\HNSCC-3DCT-RT" --output %HNSCCBUILD% --cohort tcia --clinical "C:\Users\bilel.guetarni\Desktop\data\TCIA\HNSCC-3DCT-RT\TCIA 3-6M CTCAE grade.xlsx"
 
 :: compute features using provided OAR segmentation source
 echo "computing features"

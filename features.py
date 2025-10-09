@@ -209,8 +209,9 @@ def remove_slice(slice_index, mask_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True, help='path to the cohort PICKLE file')
-    parser.add_argument('--output', type=str, required=True, help='path to folder to save results')
+    parser.add_argument('--output', type=str, required=True, help='path to csv file to save features')
     parser.add_argument('--tmp_folder', type=str, required=True, help='path where temporary files (Nifti, DICOM) are saved')
+    parser.add_argument('--overwrite', action="store_true", default=False, help='weither to overwrite features file if already existing')
     
     # features to compute
     parser.add_argument('--radiomics', type=str, default=None, help="path to the pyradiomics params file, if None then not applied")
@@ -225,6 +226,10 @@ if __name__ == "__main__":
     parser.add_argument('--rx_dose', type=int, default=70, help="prescribed value for RT, used to normalise DVH")
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
     args = parser.parse_args()
+
+    if os.path.exists(args.output) and not(args.overwrite):
+        print(f"WARNING: exiting because destination file already exists ({args.output}). To overwrite, set argument --overwrite to True")
+        exit(0)
 
     if args.oar_source == "totalsegmentator" or args.deepNN:
         os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu

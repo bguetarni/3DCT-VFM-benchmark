@@ -135,6 +135,13 @@ def run_experiment(internal_data, external_data, internal_features, external_fea
     args
         #TODO
     """
+
+    def safe_convert_float(i, point_float_pattern=r"-?\d+\.\d+|-?\d+"):
+        try:
+            return float(re.findall(point_float_pattern, i)[0])
+        except IndexError:
+            return None
+        
     combined_path = "./dataset.csv"
     build_dataset(internal_data, external_data, internal_features, external_features, combined_path)
     df = pandas.read_csv(combined_path)
@@ -183,9 +190,7 @@ def run_experiment(internal_data, external_data, internal_features, external_fea
 
         # tranform values to float (handle nan)
         # merge OARs features
-        point_float_pattern = r"-?\d+\.\d+|-?\d+"
-        convert_float = lambda i: float(re.findall(point_float_pattern, i)[0])
-        X["value"] = X["value"].apply(convert_float).astype("float32")
+        X["value"] = X["value"].apply(safe_convert_float).astype("float32")
         square_mean = lambda x: np.sqrt(np.square(x).sum())
         X = X.groupby(["id", "features", "cohort"], as_index=False)["value"].apply(square_mean)
 

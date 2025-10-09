@@ -11,3 +11,6 @@ experiments/*
 dataset.csv
 artix_totalsegmentator.csv
 artix_original.csv
+tmp/
+result.0.mhd
+result.0.raw
