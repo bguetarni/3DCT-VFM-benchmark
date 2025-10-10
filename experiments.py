@@ -36,7 +36,7 @@ def build_dataset(internal_data, external_data, internal_features, external_feat
         for p in patients:
             patient_df = []
             for k, v in loader.load_clinical(p).items():
-                patient_df.append({"cohort": cohort, "features": "clinical", "name": k, "value": v, "id": p.id})
+                patient_df.append({"cohort": cohort, "features": "clinical", "name": k, "value": v, "patient": str(p.id)})
 
             features = pandas.concat((features, pandas.DataFrame(patient_df)))
         
@@ -145,15 +145,15 @@ def run_experiment(internal_data, external_data, internal_features, external_fea
     combined_path = "./dataset.csv"
     build_dataset(internal_data, external_data, internal_features, external_features, combined_path)
     df = pandas.read_csv(combined_path)
-    df["id"] = df["id"].astype("str")
+    df["patient"] = df["patient"].astype("str")
 
     print("filtering patients...")
 
     # filter patients without xerostomia label
     subdf = df[df["name"] == "xerostomia"]
     subdf = subdf[pandas.isna(subdf["value"])]
-    df = df[~df["id"].isin(subdf["id"].unique())]
-    print("number of patients remaning: ", len(df["id"].unique()))
+    df = df[~df["patient"].isin(subdf["patient"].unique())]
+    print("number of patients remaning: ", len(df["patient"].unique()))
 
     for i, exp_params in enumerate(exps):
         print(f"running experiment {i+1}/{len(exps)}")
@@ -183,36 +183,27 @@ def run_experiment(internal_data, external_data, internal_features, external_fea
         # build X (input)
         X = exp_df.copy(deep=True)
         X['features'] = X[['features', 'name']].agg('_'.join, axis=1)
-        X = X[["id", "features", "oar", "value", "cohort"]]
-
-        internal_patient_id = X[X["cohort"] == "internal"]["id"].unique()
-        external_patient_id = X[X["cohort"] == "external"]["id"].unique()
+        X = X[["patient", "features", "oar", "value", "cohort"]]
 
         # tranform values to float (handle nan)
         # merge OARs features
         X["value"] = X["value"].apply(safe_convert_float).astype("float32")
         square_mean = lambda x: np.sqrt(np.square(x).sum())
-        X = X.groupby(["id", "features", "cohort"], as_index=False)["value"].apply(square_mean)
+        X = X.groupby(["patient", "features", "cohort"], as_index=False)["value"].apply(square_mean)
+
+        # separate data into cohorts
+        X_internal = X[X["cohort"] == "internal"]
+        X_external = X[X["cohort"] == "external"]
 
         # reshape dataframe and drop patients with nan values
         # TODO features completion
-        X = X.pivot(index="id", columns="features", values="value")
-        index_n_prev = len(X.index)
-        X = X.dropna(axis="index")
-        
-        print("removing patients because missing OAR or feature: ", index_n_prev - len(X.index))
-        print("number of patients remaning: ", len(X.index))
-
-        # split into training and testing data
-        internal_patient_id = [i for i in internal_patient_id if i in list(X.index.values)]
-        external_patient_id = [i for i in external_patient_id if i in list(X.index.values)]
-        X_internal = X.loc[internal_patient_id]
-        X_external = X.loc[external_patient_id]
+        X_internal = X_internal.pivot(index="patient", columns="features", values="value").dropna(axis="index")
+        X_external = X_external.pivot(index="patient", columns="features", values="value").dropna(axis="index")
 
         # build Y
         # this must be done on original DataFrame because toxicity value is filtered in exp dataframe
-        Y_internal = df[df["name"] == "xerostomia"].pivot(index="id", columns="name", values="value").loc[X_internal.index.values, "xerostomia"]
-        Y_external = df[df["name"] == "xerostomia"].pivot(index="id", columns="name", values="value").loc[X_external.index.values, "xerostomia"]
+        Y_internal = df[df["name"] == "xerostomia"].pivot(index="patient", columns="name", values="value").loc[X_internal.index.values, "xerostomia"]
+        Y_external = df[df["name"] == "xerostomia"].pivot(index="patient", columns="name", values="value").loc[X_external.index.values, "xerostomia"]
 
         # convert to numpy arrays
         X_internal = np.array(X_internal)

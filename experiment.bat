@@ -8,12 +8,12 @@ set GPU=1
 set OARSOURCE=totalsegmentator
 set ARTIXBUILD="C:\Users\bilel.guetarni\Desktop\SEQ-RT\artix.pkl"
 set HNSCCBUILD="C:\Users\bilel.guetarni\Desktop\SEQ-RT\hnscc.pkl"
-set TMPFOLDER="C:\Users\bilel.guetarni\Desktop\SEQ-RT\tmp"
 set RADIOMICSYAML="C:\Users\bilel.guetarni\Desktop\SEQ-RT\radiomics.yaml"
 set DOSIOMICSYAML="C:\Users\bilel.guetarni\Desktop\SEQ-RT\dosiomics.yaml"
+set TMPFOLDER="C:\Users\bilel.guetarni\Desktop\SEQ-RT\tmp"
 
-set ARTIXOUTPUT="C:\Users\bilel.guetarni\Desktop\SEQ-RT\features\artix_%OARSOURCE%_DA.csv"
-set HNSCCOUTPUT="C:\Users\bilel.guetarni\Desktop\SEQ-RT\features\hnscc_%OARSOURCE%_DA.csv"
+set ARTIXOUTPUT="C:\Users\bilel.guetarni\Desktop\SEQ-RT\features\artix_%OARSOURCE%_noDA.csv"
+set HNSCCOUTPUT="C:\Users\bilel.guetarni\Desktop\SEQ-RT\features\hnscc_%OARSOURCE%_noDA.csv"
 
 :: build datasets
 echo "building datasets"
@@ -26,8 +26,8 @@ if %OARSOURCE% == original (
     python features.py --input %ARTIXBUILD% --output %ARTIXOUTPUT% --tmp_folder %TMPFOLDER% --radiomics %RADIOMICSYAML% --dosiomics %DOSIOMICSYAML% --dvh --deepNN ct-fm --oar_source original --oar_names "C:\Users\bilel.guetarni\Desktop\SEQ-RT\ARTIX_OARs_NAMES.csv" --gpu %GPU%
     python features.py --input %HNSCCBUILD% --output %HNSCCOUTPUT% --tmp_folder %TMPFOLDER% --radiomics %RADIOMICSYAML% --dosiomics %DOSIOMICSYAML% --dvh --deepNN ct-fm --oar_source original --oar_names "C:\Users\bilel.guetarni\Desktop\SEQ-RT\TCIA_OARs_NAMES.csv" --gpu %GPU%
 ) else (
-    python features.py --input %ARTIXBUILD% --output %ARTIXOUTPUT% --tmp_folder %TMPFOLDER% --radiomics %RADIOMICSYAML% --dosiomics %DOSIOMICSYAML% --dvh --deepNN ct-fm --oar_source totalsegmentator --gpu %GPU%
-    python features.py --input %HNSCCBUILD% --output %HNSCCOUTPUT% --tmp_folder %TMPFOLDER% --radiomics %RADIOMICSYAML% --dosiomics %DOSIOMICSYAML% --dvh --deepNN ct-fm --oar_source totalsegmentator --gpu %GPU%
+    python features.py --overwrite --filterDA --input %ARTIXBUILD% --output %ARTIXOUTPUT% --tmp_folder %TMPFOLDER% --radiomics %RADIOMICSYAML% --dosiomics %DOSIOMICSYAML% --dvh --deepNN ct-fm --oar_source totalsegmentator --gpu %GPU%
+    python features.py --overwrite --filterDA --input %HNSCCBUILD% --output %HNSCCOUTPUT% --tmp_folder %TMPFOLDER% --radiomics %RADIOMICSYAML% --dosiomics %DOSIOMICSYAML% --dvh --deepNN ct-fm --oar_source totalsegmentator --gpu %GPU%
 )
 
 :: run experiment

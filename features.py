@@ -152,7 +152,7 @@ def get_DA_slices_index(ct_path):
     image = DAClassification.LoadImage(ct_path)
     predicted_label = DAClassification.GetPredictions(image.cuda(), network)
     if predicted_label.cpu().numpy().item():
-        original_stack = sitk.ReadImage(ct_path)
+        original_stack = sitk.GetArrayFromImage(sitk.ReadImage(ct_path))
 
         # This removes unwanted common features
         stack = original_stack[z_min:z_max, y_min:y_max, x_min:x_max]
@@ -295,8 +295,8 @@ if __name__ == "__main__":
         if args.filterDA:
             index = get_DA_slices_index(CT_NII_PATH)
             if index:
-                remove_slice(CT_MASK_PATH)
-                remove_slice(DOSE_MASK_PATH)
+                remove_slice(index, CT_MASK_PATH)
+                remove_slice(index, DOSE_MASK_PATH)
         
         if args.radiomics:
             print("computing radiomics...")
