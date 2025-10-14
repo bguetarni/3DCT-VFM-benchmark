@@ -203,8 +203,8 @@ def remove_slice(slice_index, mask_path):
     for z in slice_index:
         mask[z] = 0
     mask = sitk.GetImageFromArray(mask)
-    mask = mask.CopyInformation(original_mask)
-    sitk.WriteImage(mask_path)
+    mask.CopyInformation(original_mask)
+    sitk.WriteImage(mask, mask_path)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
