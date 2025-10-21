@@ -226,6 +226,8 @@ class HECKTOR(BaseLoader):
             else:
                 p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
                 data.update({p.id: p})
+        
+        return list(data.values())
 
 
 class TCIA(BaseLoader):
@@ -260,12 +262,17 @@ class TCIA(BaseLoader):
                 done = False
                 for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
                     if rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID():
-                        dcm = pydicom.dcmread(rtstruct.get_dcm_path())
-                        # 1st rule for HNSCC-3DCT-RT
-                        if (dcm.get((0x0008, 0x0070)).value == "MIM Software Inc." or dcm.get((0x0008, 0x1090)).value == "MIM") or not(ct.rtstruct):
-                            ct.add_rtstruct(rtstruct, log)
-                            done = True
-                            break
+
+                        # check for HNSCC-3DCT-RT
+                        if ct.rtstruct:
+                            dcm = pydicom.dcmread(ct.rtstruct.get_dcm_path())
+                            if dcm.get((0x0008, 0x0070)).value == "MIM Software Inc." or dcm.get((0x0008, 0x1090)).value == "MIM":
+                                # skip because current RTSTRUCT is preferable
+                                continue
+
+                        ct.add_rtstruct(rtstruct, log)
+                        done = True
+                        break
 
                 if not(done) and log: log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
 
