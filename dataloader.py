@@ -1,155 +1,39 @@
-import glob, os, tqdm, pathlib, logging, re
-from datetime import datetime
+from abc import ABC, abstractmethod
+import glob, os, tqdm, pathlib, re
 import pydicom
 import pandas
 
 import dicom_class
 import dicom_utils
 
-class BaseLoader:
+
+class BaseLoader(ABC):
     def __init__(self, path):
         self.path = path
 
-    def load(self, clinical):
-        data = []
-        all_patients_to_load = glob.glob(os.path.join(self.path, "*"))
-        for i, p in tqdm.tqdm(enumerate(all_patients_to_load), total=len(all_patients_to_load), ncols=50):
-            if not(os.path.isdir(p)):
-                continue
-            
-            p = self.load_patient(p, clinical, log=f"./{datetime.now().strftime('%Y%m%d-%H%M%S')}.log")
-            p.update_study_base_path(self.path)
-            data.append(p)
+    # @abstractmethod
+    # def load_clinical(self):
+    #     """
+    #     age, sex, ecog, cancer stage, xerostomia, hpv, lrr, rfs (days), os (days)
+    #     """
+    #     pass 
+
+    def load(self, logger):
+        data = self.build_patients(logger)
+        data = {p.id: p for p in data}
         return data
     
-    def transform_(self, x):
+    def find_digit(self, x):
         if isinstance(x, str):
             digits = re.findall("\d", x)
-            if len(digits) == 0:
-                return None
-            else:
+            if digits:
                 return int(digits[0])
+            else:
+                return None
         else:
             return None
-
-
-class ARTIX(BaseLoader):
-    # (0008, 0060) Modality
-    # 'CT', 'RTSTRUCT', 'RTDOSE'
-    # CT vs CBCT: (0008, 0070) Manufacturer of CBCT is 'ELEKTA'
-    # threshold for xerostomia is SSF<500 mg/min
-
-    # id_map
-    # ARTIX_ID_CORRELATION.xlsx
-
-    # clinicals
-    # 20241021_PATIENT_DESCRIPTION_LTSI.csv
-    # 20241021_EFFICACY_LTSI.csv
-    # 20241021_SALIVATION_DATA_LTSI.csv
-    # 20241021_TREATMENT_LTSI.csv
-    # 20241021_DOSIMETRY_LTSI.csv
-    # 20241021_MDA_LTSI.cs
-    # 20241021_TOX_GRADE_LTSI.cs
-
-    def __init__(self, path=None, id_map=None):
-        super().__init__(path)
-        self.id_map = id_map
-        self.CLINICAL_MAPPING = {
-            # SEX
-            "Male": 1,
-            "Female": 2,
-
-            # CANCER STAGING
-            "Stage III": 3,
-            "Stage IVa": 4,
-            "Stage IVb": 4,
-
-            # ECOG
-            "Asympatomatic": 0,
-            "Completely ambulatory": 1,
-            "lower than 50% in bed": 2,
-        }
-
-    def generic_parsing(self, df, type, visitID_key, value_key=None, filter_pairs=None, sample_keys=None, sample_is_column=True):
-        """
-        Generic parsing of clinical CSV
-
-        Args:
-            df (pandas.DataFrame) CSV to parse
-            type (str) the name of type of measurments [SSF, DOSIMETRY, ...]
-            visitID_key (str) name of the column of visit ID
-            value_key (str) name of the column of the measurement value
-            filter_pairs (str) list of pairs of column names and values to filter the table (each column can have multiple values)
-            sample_keys (List[str], str) names of columns that  are the sample or of the column that contain the sample name
-            sample_is_column (bool) if True consider that sample_keys is name of columns that contain the value, 
-                    else name of the columns that contain the sample names
-        """
-
-        if sample_is_column and not(sample_keys is None):
-            assert isinstance(sample_keys, list), "if 'sample_is_column' is True then 'sample_keys' must be a list of column names"
-
-        if not(sample_is_column) and not(sample_keys is None):
-            assert isinstance(sample_keys, str), "if 'sample_is_column' is False, then 'sample_keys' must be a string as the name of the column containing the sample names"
-            assert not(value_key is None), "if 'sample_is_column' is False, then 'value_key' must be provided"
-
-        if not filter_pairs is None:
-            for k, v in filter_pairs:
-                if not isinstance(v, list):
-                    v = [v]
-
-                # filter the table
-                df = df[df[k].isin(v)]
         
-        # for each row populate clinical measurements data
-        result = []
-        for _, row in df.iterrows():
-            if sample_keys is None:
-                result.append({"type": type, "value": row[value_key], "visitID": row[visitID_key]})
-            else:
-                # for each sample add data and name
-                if sample_is_column:
-                    # sample_keys are the name of the samples columns
-                    for k in sample_keys:
-                        result.append({"type": type, "value": row[k], "visitID": row[visitID_key], "sample": k})
-                else:
-                    # sample_keys is the column containing samples names
-                    result.append({"type": type, "value": row[value_key], "visitID": row[visitID_key], "sample": row[sample_keys]})
-        return result
-
-    def salivation_parsing(self, df):
-        return self.generic_parsing(df, 
-                            filter_pairs=[("MEASTYP", ["Stimulated salivation flow"])],
-                            type="SSF",
-                            visitID_key="VISITID",
-                            value_key="MEAS_VAL")
-
-    def dosimetry_parsing(self, df):
-        return self.generic_parsing(df, 
-                            type="DOSIMETRY",
-                            visitID_key="DOSISEQ",
-                            sample_keys=["PAROH_DOSE", "PAROC_DOSE", "SMAXH_DOSE", "SMAXC_DOSE", "MOUTH_DOSE"],
-                            sample_is_column=True)
-
-    def mda_parsing(self, df):
-        return self.generic_parsing(df, 
-                            type="MDA",
-                            visitID_key="VISITID",
-                            sample_keys=['Q1','Q2','Q3','Q4','Q5','Q6','Q7','Q8','Q9',
-                                            'Q10','Q11','Q12','Q13','Q14','Q15','Q16','Q17','Q18','Q19',
-                                            'Q20','Q21','Q22','Q23','Q24','Q25','Q26','Q27','Q28'],
-                            sample_is_column=True)
-
-    def aetox_parsing(self, df):
-        df = df[df["AETERM"].isin(["DYSPHAGIE", "XEROSTOMIE"])]
-        result = []
-        for _, row in df.iterrows():
-            for k in filter(lambda c: "grade" in c, df.columns):
-                timestamp = re.findall("[SM]\d+", k)
-                if len(timestamp) > 0:
-                    result.append({"type": "AE", "value": row[k], "visitID": timestamp[0], "sample": row["AETERM"]})
-        return result
-
-    def load_folder(self, path):
+    def parse_dicom_data(self, path):
         """
         Load a folder which could be anything (collection of imaging, CT, RTDOSE, ...)
 
@@ -184,190 +68,253 @@ class ARTIX(BaseLoader):
 
         for folder in glob.glob(os.path.join(path, "*")):
             if pathlib.Path(folder).is_dir():
-                data.extend(self.load_folder(folder))
+                data.extend(self.parse_dicom_data(folder))
 
         return data
 
-    def load_patient(self, path_, clinical=None, log=None):
-        """
-        Load a patient folder and return images with dose and rtplan
 
-        Args:
-            path_ (str) path to patient folder
-            clinical (str) path to clinical fodler with csv files
-            log (str) path to file to log warnings and errors
+class ARTIX(BaseLoader):
+    # CT vs CBCT: (0008, 0070) Manufacturer of CBCT is 'ELEKTA'
+    def __init__(self, path):
+        super().__init__(path)
+        self.CLINICAL_MAPPING = {
+            # SEX
+            "Male": 1,
+            "Female": 2,
 
-        return Patient object
-        """
+            # CANCER STAGING
+            "Stage III": 3,
+            "Stage IVa": 4,
+            "Stage IVb": 4,
 
-        if not(log is None):
-            logging.basicConfig(
-                filename=log,
-                format='%(levelname)s: %(message)s',
-                filemode='w',
-                level=logging.DEBUG)
-            log = logging.getLogger()
+            # ECOG
+            "Asympatomatic": 0,
+            "Completely ambulatory": 1,
+            "lower than 50% in bed": 2,
+        }
 
-        id = pathlib.Path(path_).name
-
-        # convert patient ID from folder to clinical data
-        id_map = pandas.read_excel(self.id_map)
-        id = int(id_map[id_map["My Identifier ID"] == float(id)]["USUBJID"].item())
-        
-        # load every DICOM data of patient folder
-        patient_data = self.load_folder(path_)
-
-        # print number of DICOM data loaded
-        data_type = {k: len(list(filter(lambda i: isinstance(i, k), patient_data))) for k in set(map(type, patient_data))}
-        # print(f"total data loaded from {path_}")
-        # for k, v in data_type.items():
-        #     print(f"{k}:\t {v}")
-
-        # group CT with dose
-        for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
-            done = False
-            for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
-                if max(dicom_utils.get_directory_level(rtdose.path, ct.path)) > 1:
-                    continue
-
-                if rtdose.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID() or \
-                    rtdose.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
-                        ct.rtdose is None:
-                    ct.add_rtdose(rtdose, log)
-                    done = True
-                    break
-
-            if not(done) and not(log is None):
-                log.warning(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
-
-        # group CT with struct
-        for rtstruct in filter(lambda i: isinstance(i, dicom_class.RTSTRUCT), patient_data):
-            done = False
-            for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
-                if (rtstruct.get_StudyID() == ct.get_StudyID() and ct.rtstruct is None) or \
-                    rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
-                        (max(dicom_utils.get_directory_level(rtstruct.path, ct.path)) < 2 and ct.rtstruct is None):
-                    ct.add_rtstruct(rtstruct, log)
-                    done = True
-                    break
-
-            if not(done) and not(log is None):
-                log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
-
-        clinical_d = None
-        clinical_measurements = []
-        if not(clinical is None):
-            # load clinical data
-            PATIENT_DESCRIPTION_csv = os.path.join(clinical, "20241021_PATIENT_DESCRIPTION_LTSI.csv")
-            EFFICACY_csv = os.path.join(clinical, "20241021_EFFICACY_LTSI.csv")
-            TREATMENT_csv = os.path.join(clinical, "20241021_TREATMENT_LTSI.csv")
-            for sub_df in (PATIENT_DESCRIPTION_csv, EFFICACY_csv, TREATMENT_csv):
-                if sub_df is None:
-                    continue
-
-                sub_df = pandas.read_csv(sub_df, sep=";", encoding='ISO-8859-1')
-                
-                # convert USUBJID and filter data for patient id only
-                # check patient is in CSV data
-                sub_df = sub_df[sub_df["USUBJID"].astype(int) == id]
-                if len(sub_df) == 0:
-                    if not log is None:
-                        log.warning(f"WARNING: patient folder id {id} not found in clinical data")
-                    else:
-                        print(f"WARNING: patient folder id {id} not found in clinical data")
-                    continue
-
-                if clinical_d is None:
-                    clinical_d = sub_df
-                else:
-                    # merge DataFrames based on common columns
-                    common_columns = set(clinical_d.columns).intersection(set(sub_df.columns))
-                    clinical_d = pandas.merge(clinical_d, sub_df, on=list(common_columns), how='inner')
+    def build_patients(self, log=None):
+        data = []
+        list_of_patients =  glob.glob(os.path.join(self.path, "DICOM_ARTIX_data", "*"))
+        for p in tqdm.tqdm(list_of_patients):
+            # convert patient ID from folder to clinical data
+            id = pathlib.Path(p).name
+            id_map = pandas.read_excel(os.path.join(self.path, "ARTIX_ID_CORRELATION.xlsx"))
+            id = str(id_map[id_map["My Identifier ID"].astype(int) == int(id)]["USUBJID"].item()).zfill(3)
             
-            clinical_d = clinical_d.to_dict('records')[0]
+            # load every DICOM data of patient folder
+            patient_data = self.parse_dicom_data(p)
 
-            # load clinical measurements
-            SALIVATION_DATA_csv = os.path.join(clinical, "20241021_SALIVATION_DATA_LTSI.csv")
-            DOSIMETRY_csv = os.path.join(clinical, "20241021_DOSIMETRY_LTSI.csv")
-            MDA_csv = os.path.join(clinical, "20241021_MDA_LTSI.csv")
-            AETOXGEN_csv = os.path.join(clinical, "20241021_TOX_GRADE_LTSI.csv")
-            for sub_df, fn in [
-                (SALIVATION_DATA_csv, self.salivation_parsing),
-                (DOSIMETRY_csv, self.dosimetry_parsing),
-                (MDA_csv, self.mda_parsing),
-                (AETOXGEN_csv, self.aetox_parsing),
-            ]:
-                if sub_df is None:
-                    continue
+            # group CT with dose
+            for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
+                done = False
+                for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
+                    if max(dicom_utils.get_directory_level(rtdose.path, ct.path)) > 1:
+                        continue
 
-                sub_df = pandas.read_csv(sub_df, sep=";", encoding='ISO-8859-1')
+                    if rtdose.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID() or \
+                        rtdose.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
+                            ct.rtdose is None:
+                        ct.add_rtdose(rtdose, log)
+                        done = True
+                        break
 
-                # convert USUBJID and filter data for patient id only
-                # check patient is in CSV data
-                sub_df = sub_df[sub_df["USUBJID"].astype(int) == id]
-                if len(sub_df) == 0:
-                    if not log is None:
-                        log.warning(f"WARNING: patient folder id {id} not found in clinical data")
-                    else:
-                        print(f"WARNING: patient folder id {id} not found in clinical data")
-                    continue
+                if not(done) and log: log.warning(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
 
-                clinical_measurements.extend(fn(sub_df))
+            # group CT with struct
+            for rtstruct in filter(lambda i: isinstance(i, dicom_class.RTSTRUCT), patient_data):
+                done = False
+                for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
+                    if (rtstruct.get_StudyID() == ct.get_StudyID() and ct.rtstruct is None) or \
+                        rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
+                            (max(dicom_utils.get_directory_level(rtstruct.path, ct.path)) < 2 and ct.rtstruct is None):
+                        ct.add_rtstruct(rtstruct, log)
+                        done = True
+                        break
+
+                if not(done) and log: log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
+            
+            # parse clinical data
+            clinical = {}
+            for i in ("20241021_PATIENT_DESCRIPTION_LTSI.csv", "20241021_EFFICACY_LTSI.csv", "20241021_TREATMENT_LTSI.csv"):
+                df = pandas.read_csv(os.path.join(self.path, "toxicity_data", i), sep=";", encoding='ISO-8859-1')
+                df = df[df["USUBJID"].astype(int) == int(id)].to_dict(orient="records")
+                if df:
+                    clinical.update(df[0])
+                else:
+                    if log: log.warning(f"WARNING: patient {id} not found in clinical data {i}")
+
+            # parse toxicity data
+            tox_df = pandas.read_csv(os.path.join(self.path, "toxicity_data", "20241021_TOX_GRADE_LTSI.csv"), sep=";", encoding='ISO-8859-1')
+            tox_df = tox_df[(tox_df["USUBJID"].astype(int) == int(id)) & (tox_df["AETERM"] == "XEROSTOMIE")].to_dict(orient="records")
+            if tox_df:
+                tox_df = tox_df[0]
+                clinical.update({"baseline": tox_df["grade_S0"], "xerostomia": tox_df["grade_M6"]})
+            else:
+                if log: log.warning(f"WARNING: patient {id} toxicity data not found")
+
+            # build patient object
+            p = dicom_class.Patient(
+                patient_id = str(id).zfill(3),
+                ct = list(filter(lambda i: isinstance(i, dicom_class.CT), patient_data)),
+                cbct = list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
+                clinical = clinical)
+            
+            data.append(p)
         
-        return dicom_class.Patient(
-            id_=id,
-            ct=list(filter(lambda i: isinstance(i, dicom_class.CT), patient_data)),
-            cbct=list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
-            clinical=clinical_d,
-            clinical_measurements=clinical_measurements,
-        )
-    
-    def load_clinical(self, patient):
-        try:
-            sex = self.CLINICAL_MAPPING[patient.clinical['SEX']]
-        except (KeyError, ValueError):
-            sex = None
+        return data
 
-        try:
-            age = self.CLINICAL_MAPPING[patient.clinical['AGE']]
-        except (KeyError, ValueError):
-            age = None
 
-        try:
-            stage = self.CLINICAL_MAPPING[patient.clinical['ST_STAG']]
-        except (KeyError, ValueError):
-            stage = None
+class HECKTOR(BaseLoader):
+    def __init__(self, path):
+        super().__init__(path)
+        self.CLINICAL_MAPPING = {} #TODO
 
-        try:
-            ecog = self.CLINICAL_MAPPING[patient.clinical['ECOG']]
-        except (KeyError, ValueError):
-            ecog = None
+    def build_patients(self, log=None):
+        data = {}
 
-        # select xerostomia in CTCAE
-        # transform values
-        # change S0 into Inclusion
-        # if patient has baseline tox, set label to None
-        # keep only M6 grade
-        cm = pandas.DataFrame(patient.clinical_measurements)
-        cm = cm[(cm["type"] == "AE") & (cm["sample"] == "XEROSTOMIE")]
-        cm["value"] = cm["value"].apply(self.transform_)
-        cm.loc[(cm["visitID"] == "S0"), "visitID"] = "Inclusion"
-        if (cm[(cm["visitID"] == "Inclusion") & (cm["sample"] == "XEROSTOMIE")]["value"].astype('Int64') > 0).any():
-            # exclude patient because xerstomia baseline present
-            xerostomia = None
-        else:
+        # task 2
+        list_of_patients =  glob.glob(os.path.join(self.path, "Task 2", "*"))
+        for p in tqdm.tqdm(list_of_patients):
+            if not os.path.isdir(p):
+                continue
+
+            id = os.path.split(p)[1]
+
             try:
-                cm = cm[cm["visitID"] == "M6"]
-                xerostomia = int(cm["value"].values[0])
-                xerostomia = 0 if xerostomia < 2 else 1
-            except (IndexError, ValueError):
-                xerostomia = None
+                ct = dicom_class.CT(glob.glob(os.path.join(p, "*_CT.nii.gz"))[0])
+            except IndexError:
+                if log: log.warning(f"WARNING: no CT found for patient {id}")
+                ct = None
 
-        return {'sex': sex, 'age': age, 'stage': stage, 'ecog': ecog, "xerostomia": xerostomia}
+            try:
+                dose = dicom_class.CT(glob.glob(os.path.join(p, "*_RTDOSE.nii.gz"))[0])
+                if ct:
+                    ct.add_rtdose(dose)
+            except IndexError:
+                if log: log.warning(f"WARNING: no RTDOSE found for patient {id}")
+                pass
+
+            df = pandas.read_csv(os.path.join(self.path, "Task 2", "HECKTOR_2025_Training_Task_2.csv"))
+            clinical = df[df["PatientID"] == str(id)].to_dict(orient="records")[0]
+
+            p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
+            data.update({p.id: p})
+
+        # task 3
+        list_of_patients =  glob.glob(os.path.join(self.path, "Task 3", "*"))
+        for p in tqdm.tqdm(list_of_patients):
+            if not os.path.isdir(p):
+                continue
+
+            id = os.path.split(p)[1]
+
+            try:
+                ct = dicom_class.CT(glob.glob(os.path.join(p, "*_CT.nii.gz"))[0])
+                if log: log.warning(f"WARNING: no CT found for patient {id}")
+            except IndexError:
+                ct = None
+
+            df = pandas.read_csv(os.path.join(self.path, "Task 3", "HECKTOR_2025_Training_Task_3.csv"))
+            clinical = df[df["PatientID"] == str(id)].to_dict(orient="records")[0]
+
+            if id in data.keys():
+                if not(data[id].ct) and ct:
+                    data[id].ct = ct
+                
+                data[id].clinical.update({clinical})
+            else:
+                p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
+                data.update({p.id: p})
+
+
+class TCIA(BaseLoader):
+    def __init__(self, path):
+        super().__init__(path)
+
+    def build_patients(self, log=None):
+        data = []
+        list_of_patients =  glob.glob(os.path.join(self.path, "manifest*", "*", "*"))
+        for p in tqdm.tqdm(list_of_patients):
+            if not os.path.isdir(p):
+                continue
+
+            id = pathlib.Path(self.path).name
+
+            # load every DICOM data of patient folder
+            patient_data = self.parse_dicom_data(p)
+
+            # group CT with dose
+            for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
+                done = False
+                for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
+                    if rtdose.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID():
+                        ct.add_rtdose(rtdose, log)
+                        done = True
+                        break
+
+                if not(done) and log: log.warning(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
+
+            # group CT with struct
+            for rtstruct in filter(lambda i: isinstance(i, dicom_class.RTSTRUCT), patient_data):
+                done = False
+                for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
+                    if rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID():
+                        dcm = pydicom.dcmread(rtstruct.get_dcm_path())
+                        # 1st rule for HNSCC-3DCT-RT
+                        if (dcm.get((0x0008, 0x0070)).value == "MIM Software Inc." or dcm.get((0x0008, 0x1090)).value == "MIM") or not(ct.rtstruct):
+                            ct.add_rtstruct(rtstruct, log)
+                            done = True
+                            break
+
+                if not(done) and log: log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
+
+            clinical = self.get_patient_clinical_data(id)
+            
+            p =  dicom_class.Patient(
+                patient_id=id,
+                ct=list(filter(lambda i: isinstance(i, dicom_class.CT), patient_data)),
+                cbct=list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
+                clinical=clinical)
+        
+            data.append(p)
     
+        return data
+    
+    @abstractmethod
+    def get_patient_clinical_data(self, patient_id):
+        pass
 
-class TCIA_HNSCC3DCTRT(BaseLoader):
-    def __init__(self, path=None):
+
+class HeadNeckCTAtlas(TCIA):
+    def __init__(self, path):
+        super().__init__(path)
+
+    def get_patient_clinical_data(self, patient_id):
+        clinical = pandas.read_excel(os.path.join(self.path, "HNSCC-MDA-Data_update_20240514.xlsx"), sheet_name="HNSCC-MDA-Data_update")
+        clinical = clinical[clinical["TCIA PatientID"] == patient_id].to_dict('records')
+        if clinical: return clinical[0]
+        else: return {}
+
+
+class HeadNeckPETCT(TCIA):
+    def __init__(self, path):
+        super().__init__(path)
+
+    def get_patient_clinical_data(self, patient_id):
+        clinical = []
+        for i in ("HGJ", "CHUS", "HMR", "CHUM"):
+            df = pandas.read_excel(os.path.join(self.path, "INFOclinical_HN_Version2_30may2018.xlsx"), sheet_name=i)
+            df["center"] = i
+            clinical.append(df)
+        clinical = pandas.concat(clinical)
+        clinical = clinical[clinical["Patient #"] == patient_id].to_dict('records')
+        if clinical: return clinical[0]
+        else: return {}
+
+
+class HNSCC3DCTRT(TCIA):
+    def __init__(self, path):
         super().__init__(path)
         self.CLINICAL_MAPPING = {
             # SEX
@@ -391,137 +338,40 @@ class TCIA_HNSCC3DCTRT(BaseLoader):
             'ECOG 1-2': 1,
         }
 
-    def load_folder(self, path):
-        """
-        Load a folder which could be anything (collection of imaging, CT, RTDOSE, ...)
+    def get_patient_clinical_data(self, patient_id):
+        clinical = pandas.read_excel(os.path.join(self.path, "TCIA 3-6M CTCAE grade.xlsx"))
+        clinical = clinical[clinical["HN_P"].astype(int) == int(re.findall("\d+", patient_id)[0])].to_dict('records')
+        if clinical: return clinical[0]
+        else: return {}
 
-        return list of objects of type (CT, RTDOSE, RTSTRUCT)
-        """
+class OropharyngealRadiomicsOutcomes(TCIA):
+    def __init__(self, path):
+        super().__init__(path)
 
-        data = []
-        try:
-            if all([pydicom.misc.is_dicom(j) for j in glob.glob(os.path.join(path, "*"))]):
-                # it is DICOM folder
+    def get_patient_clinical_data(self, patient_id):
+        clinical = pandas.read_csv(os.path.join(self.path, "Radiomics_Outcome_Prediction_in_OPC_ASRM_corrected.csv"))
+        clinical = clinical[clinical["TCIA Radiomics dummy ID of To_Submit_Final"] == patient_id].to_dict('records')
+        if clinical: return clinical[0]
+        else: return {}
 
-                files = os.listdir(path)
-                
-                if len(files) == 0:
-                    return []
-                
-                dcm = pydicom.dcmread(os.path.join(path, files[0]))
-                type = dcm.get((0x0008, 0x0060)).value
-                if type == "CT":
-                    return [dicom_class.CT(path)]
-                elif type == "RTSTRUCT":
-                    return [dicom_class.RTSTRUCT(path)]
-                elif type == 'RTDOSE':
-                    return [dicom_class.RTDOSE(path)]
-                else:
-                    return []
-        except PermissionError:
-            pass
+class QINHEADNECK(TCIA):
+    def __init__(self, path):
+        super().__init__(path)
 
-        for folder in glob.glob(os.path.join(path, "*")):
-            if pathlib.Path(folder).is_dir():
-                data.extend(self.load_folder(folder))
+    def get_patient_clinical_data(self, patient_id):
+        df1 = pandas.read_excel(os.path.join(self.path, "Batch_01-and-Batch_02-Clinical-Data_aug242020.xlsx"), header=0, sheet_name="uiowa_clinical_data_batch1_aug2")
+        df2 = pandas.read_excel(os.path.join(self.path, "Batch_01-and-Batch_02-Clinical-Data_aug242020.xlsx"), header=0, sheet_name="uiowa_clinical_data_batch2_aug2")
+        clinical = pandas.concat((df1, df2)).drop(index=0)
+        clinical = clinical[clinical["PatientID"] == patient_id].to_dict('records')
+        if clinical: return clinical[0]
+        else: return {}
 
-        return data
+class RADCURE(TCIA):
+    def __init__(self, path):
+        super().__init__(path)
 
-    def load_patient(self, path, clinical=None, log=None):
-        """
-        Load a patient folder and return images with dose and rtplan
-
-        Args:
-            path (str) path to patient folder
-            id_map (str) path to CSV mapping folder IDs to clinical data IDs
-            clinical (str) path to clinical fodler with csv files
-            log (str) path to file to log warnings and errors
-
-        return Patient object
-        """
-
-        if not(log is None):
-            logging.basicConfig(
-                filename=log,
-                format='%(levelname)s: %(message)s',
-                filemode='w',
-                level=logging.DEBUG)
-            log = logging.getLogger()
-
-        id = pathlib.Path(path).name
-
-        # load every DICOM data of patient folder
-        patient_data = self.load_folder(path)
-
-        # print number of DICOM data loaded
-        data_type = {k: len(list(filter(lambda i: isinstance(i, k), patient_data))) for k in set(map(type, patient_data))}
-        # print(f"total data loaded from {path}")
-        # for k, v in data_type.items():
-        #     print(f"{k}:\t {v}")
-
-        # group CT with dose
-        for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
-            done = False
-            for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
-                if rtdose.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID():
-                    ct.add_rtdose(rtdose, log)
-                    done = True
-                    break
-
-            if not(done) and not(log is None):
-                log.warning(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
-
-        # group CT with struct
-        for rtstruct in filter(lambda i: isinstance(i, dicom_class.RTSTRUCT), patient_data):
-            done = False
-            for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
-                if rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID():
-                    dcm = pydicom.dcmread(rtstruct.get_dcm_path())
-                    if (dcm.get((0x0008, 0x0070)).value == "MIM Software Inc." or dcm.get((0x0008, 0x1090)).value == "MIM") or ct.rtstruct is None:
-                        ct.add_rtstruct(rtstruct, log)
-                        done = True
-                        break
-
-            if not(done) and not(log is None):
-                log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
-
-        # load clinical data
-        if not(clinical is None):
-            clinical_d = pandas.read_excel(clinical)
-            clinical_d = clinical_d[clinical_d["HN_P"] == int(re.findall("\d+", id)[0])].to_dict('records')[0]
-        
-        return dicom_class.Patient(
-            id_=id,
-            ct=list(filter(lambda i: isinstance(i, dicom_class.CT), patient_data)),
-            cbct=list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
-            clinical=clinical_d,
-        )
-    
-    def load_clinical(self, patient):
-        try:
-            sex = self.CLINICAL_MAPPING[patient.clinical['Sex']]
-        except (KeyError, ValueError):
-            sex = None
-
-        try:
-            age = self.CLINICAL_MAPPING[patient.clinical['Age']]
-        except (KeyError, ValueError):
-            age = None
-
-        try:
-            stage = self.CLINICAL_MAPPING[patient.clinical['Cancer Staging']]
-        except (KeyError, ValueError):
-            stage = None
-
-        try:
-            ecog = self.CLINICAL_MAPPING[patient.clinical['ECOG']]
-        except (KeyError, ValueError):
-            ecog = None
-
-        try:
-            xerostomia = int(patient.clinical['Xerostomia Grade'])
-            xerostomia = 0 if xerostomia < 2 else 1
-        except ValueError:
-            xerostomia = None
-
-        return {'sex': sex, 'age': age, 'stage': stage, 'ecog': ecog, "xerostomia": xerostomia}
+    def get_patient_clinical_data(self, patient_id):
+        clinical = pandas.read_excel(os.path.join(self.path, "RADCURE_Clinical_v04_20241219 (1).xlsx"))
+        clinical = clinical[clinical["patient_id"] == patient_id].to_dict('records')
+        if clinical: return clinical[0]
+        else: return {}

@@ -1,5 +1,5 @@
 from abc import ABC
-import os, pathlib
+import os
 from datetime import datetime
 import numpy as np
 import SimpleITK as sitk
@@ -403,22 +403,22 @@ class RTSTRUCT(DICOM):
 
         
 class Patient:
-    def __init__(self, id_, ct=[], cbct=[], clinical={}, clinical_measurements=[]):
+    def __init__(self, patient_id, center_id=None, ct=[], cbct=[], clinical={}):
         """
         Create a RT patient with imaging and clinical data
 
         Args:
-            id_ (int) patient ID
+            patient_id (int,str) patient ID
+            center_id (int,str) center ID
             ct (List) list of CT imaging (including dose and struct)
             cbct (List) list of CBCT imaging
             clinical (dict) dictionnary containing clinical data of patient (age, sexe, ...)
-            clinical_measurements (List) list containing clinical measurements (SSF, DOSIMETRY, MDASI, ...)
         """
-        self.id = id_
+        self.id = patient_id
+        self.center_id = center_id
         self.ct = ct
         self.cbct = cbct
         self.clinical = clinical
-        self.clinical_measurements = clinical_measurements
 
     def sort_imaging(self):
         """

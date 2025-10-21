@@ -1,24 +1,13 @@
 @echo off
 setlocal
-
-:: Check if argument is provided
-if "%~1"=="" (
-    echo Please provide an argument.
-    exit /b 1
-)
-
 call activate radiomics
-
-:: Store the argument in a variable
-set "arg=%~1"
-
-:: Compare against multiple values
-if /i "%arg%"=="artix" (
-    python build.py --input "C:\Users\bilel.guetarni\Desktop\data\ARTIX\DICOM_ARTIX_data" --output "C:\Users\bilel.guetarni\Desktop\ARTIX\data\artix.pkl" --cohort artix --id_map "C:\Users\bilel.guetarni\Desktop\data\ARTIX\ARTIX_ID_CORRELATION.xlsx" --clinical "C:\Users\bilel.guetarni\Desktop\data\ARTIX\toxicity_data"
-) else if /i "%arg%"=="tcia" (
-    python build.py --input "C:\Users\bilel.guetarni\Desktop\data\TCIA\HNSCC-3DCT-RT\manifest-1549495779734\HNSCC-3DCT-RT" --output "C:\Users\bilel.guetarni\Desktop\ARTIX\data\tcia.pkl" --cohort tcia --clinical "C:\Users\bilel.guetarni\Desktop\data\TCIA\HNSCC-3DCT-RT\TCIA 3-6M CTCAE grade.xlsx"
-) else (
-    echo Unknown value: %arg%
-)
-
+set OUTPUT="C:\Users\bilel.guetarni\Desktop\workspace\SEQ-RT\pickle datasets"
+python build.py --overwrite --input "E:\bilel\ARTIX\ARTIX" --output %OUTPUT% --cohort artix
+python build.py --overwrite --input "E:\bilel\HECKTOR 2025 Training Data" --output %OUTPUT% --cohort hecktor
+python build.py --overwrite --input "F:\TCIA\Head-Neck-CT-Atlas" --output %OUTPUT% --cohort headneckctatlas
+python build.py --overwrite --input "F:\TCIA\Head-Neck-PET-CT" --output %OUTPUT% --cohort headneckpetct
+python build.py --overwrite --input "F:\TCIA\HNSCC-3DCT-RT" --output %OUTPUT% --cohort hnscc3dctrt
+python build.py --overwrite --input "F:\TCIA\Oropharyngeal-Radiomics-Outcomes" --output %OUTPUT% --cohort oropharyngealradiomicsoutcomes
+python build.py --overwrite --input "F:\TCIA\QIN-HEADNECK" --output %OUTPUT% --cohort qinheadneck
+python build.py --overwrite --input "F:\TCIA\RADCURE" --output %OUTPUT% --cohort radcure
 endlocal
