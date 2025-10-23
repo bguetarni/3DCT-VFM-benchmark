@@ -80,10 +80,10 @@ class DICOM(ABC):
         
         try:
             return dcm[0x0020,0x0052].value
-        except KeyError:
+        except Exception:
             try:
                 return dcm[0x3006,0x0010].value[0][0x0020,0x0052].value
-            except AttributeError:
+            except Exception:
                 print(f"Tag FrameOfReferenceUID not available for {path}")
                 return None
 
@@ -102,10 +102,7 @@ class DICOM(ABC):
             
             try:
                 return dcm[0x0020,0x000d].value
-            except KeyError:
-                print(f"Tag StudyInstanceUID not available for {path}")
-                return None
-            except AttributeError:
+            except Exception:
                 print(f"Tag StudyInstanceUID not available for {path}")
                 return None
 
@@ -125,10 +122,10 @@ class DICOM(ABC):
             
             try:
                 return dcm[0x0020,0x0010].value
-            except KeyError:
+            except Exception:
                 print(f"Tag StudyID not available for {path}")
                 return None
-            except AttributeError:
+            except Exception:
                 print(f"Tag StudyID not available for {path}")
                 return None
             

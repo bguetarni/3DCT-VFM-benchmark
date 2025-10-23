@@ -15,3 +15,4 @@ tmp/
 result.0.mhd
 result.0.raw
 TransformParameters.0.txt
+pickle datasets/*

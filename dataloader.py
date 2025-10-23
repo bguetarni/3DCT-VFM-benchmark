@@ -100,7 +100,7 @@ class ARTIX(BaseLoader):
             # convert patient ID from folder to clinical data
             id = pathlib.Path(p).name
             id_map = pandas.read_excel(os.path.join(self.path, "ARTIX_ID_CORRELATION.xlsx"))
-            id = str(id_map[id_map["My Identifier ID"].astype(int) == int(id)]["USUBJID"].item()).zfill(3)
+            id = str(id_map[id_map["My Identifier ID"].astype(float) == float(id)]["USUBJID"].item()).zfill(3)
             
             # load every DICOM data of patient folder
             patient_data = self.parse_dicom_data(p)
@@ -222,7 +222,7 @@ class HECKTOR(BaseLoader):
                 if not(data[id].ct) and ct:
                     data[id].ct = ct
                 
-                data[id].clinical.update({clinical})
+                data[id].clinical.update(clinical)
             else:
                 p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
                 data.update({p.id: p})
@@ -241,7 +241,7 @@ class TCIA(BaseLoader):
             if not os.path.isdir(p):
                 continue
 
-            id = pathlib.Path(self.path).name
+            id = pathlib.Path(p).name
 
             # load every DICOM data of patient folder
             patient_data = self.parse_dicom_data(p)
