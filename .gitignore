@@ -1,6 +1,8 @@
 *.pyc
 *.log
 *.pkl
+*.pt
+*.pth
 testLog.txt
 log
 .vscode/
