@@ -163,6 +163,40 @@ class ARTIX(BaseLoader):
             data.append(p)
         
         return data
+    
+    def generate_clinical_df(self):
+        col = {
+            "USUBJID":"Unique subject identifier",
+            "SEX":"Gender",
+            "AGE":"Age at inclusion",
+            "BMI":"Body Mass Index (kg/m²)",
+            "ECOG":"OMS performance status",
+            "FUM":"Tabagism",
+            "PA":"Number of pack-year",
+            "OH":"Ethylisme",
+            "DIAB":"Diabetes Mellitus",
+            "P16":"p16 gene expression",
+            "ST_STAG":"Strat Disease Stage",
+            "ST_HPV":"Strat HPV Status",
+            "HISTO":"Tumor histology",
+            "LOC":"Primary tumor localization",
+            "NSTAG":"N stage",
+            "RT_NB":"Number of RT sessions",
+            "PTV70_DOSE":"PTV70 Dose per fraction"}
+
+        df = None
+        for f in ["20241021_PATIENT_DESCRIPTION_LTSI.csv", "20241021_DOSIMETRY_LTSI.csv", "20241021_TREATMENT_LTSI.csv"]:
+            f = pandas.read_csv(os.path.join(self.path, "toxicity_data", f), sep=";", encoding='ISO-8859-1')
+            if "DOSISEQ" in f.columns:
+                f = f[f["DOSISEQ"] == "Initial"]
+            f = f[[c for c in f.columns if c in col.keys()]]
+            if df is None:
+                df = f
+            else:
+                df = df.merge(f, how='outer')
+
+        df = df.rename(columns=col, errors="raise")
+        return df
 
 
 class HECKTOR(BaseLoader):
@@ -228,7 +262,27 @@ class HECKTOR(BaseLoader):
                 data.update({p.id: p})
         
         return list(data.values())
+    
+    def generate_clinical_df(self):
+        col = {
+            "PatientID": "PatientID",
+            "Age": "Age",
+            "Gender": "Gender",
+            "Tobacco Consumption": "Tobacco Consumption",
+            "Alcohol Consumption": "Alcohol Consumption",
+            "Performance Status": "Performance Status",
+            "M-stage": "M-stage",
+            "HPV Status": "HPV Status",
+        }
 
+        df1 = pandas.read_csv(os.path.join(self.path, "Task 1", "HECKTOR_2025_Training_Task_1.csv"))
+        df2 = pandas.read_csv(os.path.join(self.path, "Task 2", "HECKTOR_2025_Training_Task_2.csv"))
+        df3 = pandas.read_csv(os.path.join(self.path, "Task 3", "HECKTOR_2025_Training_Task_3.csv"))
+        df = df1.merge(df2, how='outer').merge(df3, how='outer')
+
+        df = df[[c for c in df.columns if c in col.keys()]]
+        df = df.rename(columns=col, errors="raise")
+        return df
 
 class TCIA(BaseLoader):
     def __init__(self, path):
@@ -303,6 +357,28 @@ class HeadNeckCTAtlas(TCIA):
         if clinical: return clinical[0]
         else: return {}
 
+    def generate_clinical_df(self):
+        col = {
+            "TCIA PatientID": "Patient ID number randomly assigned to each patient prior to anonymizing the DICOM PHI tag (0010,0020)",
+            "Sex": "Patient sex, male or female",
+            "Age": "Patient age, years",
+            "Site": "Primary cancer subsite. CUP = cancer of unknown primary",
+            "Histology": "Cancer histopathology. SCC=squamous cell carcinoma",
+            "N": "AJCC 7th edition N stage",
+            "Stage": "AJCC 7th edition summary stage",
+            "RT Total Dose (Gy)": "Total RT dose delivered during radiotherapy.",
+            "Dose/Fraction (Gy/fx)": "Dose delivered to prescription target volume (gross disease or post-operative tumor bed)",
+            "Number of Fractions": "Number of RT fractions delivered.",
+            "Smoking History": "Smoking history coded: 0=never smoker, 1= fewer than 10 pack-years, 2= 10 or more pack-years",
+            "Current Smoker": "Current smoker: 0=no, 1=yes",
+            "BMI start treat (kg/m2)": "Patient BMI at the start of radiotherapy.",
+        }
+
+        df = pandas.read_excel(os.path.join(self.path, "HNSCC-MDA-Data_update_20240514.xlsx"), sheet_name="HNSCC-MDA-Data_update")
+        df = df[[c for c in df.columns if c in col.keys()]]
+        df = df.rename(columns=col, errors="raise")
+        return df
+
 
 class HeadNeckPETCT(TCIA):
     def __init__(self, path):
@@ -318,6 +394,26 @@ class HeadNeckPETCT(TCIA):
         clinical = clinical[clinical["Patient #"] == patient_id].to_dict('records')
         if clinical: return clinical[0]
         else: return {}
+
+    def generate_clinical_df(self):
+        col = {
+            "Patient #": "Patient #",
+            "Sex": "Sex",
+            "Age": "Age",
+            "Primary Site": "Primary Site",
+            "N-stage": "N-stage",
+            "TNM group stage": "TNM group stage",
+            "HPV status": "HPV status",
+        }
+
+        df = []
+        for i in ("HGJ", "CHUS", "HMR", "CHUM"):
+            df__ = pandas.read_excel(os.path.join(self.path, "INFOclinical_HN_Version2_30may2018.xlsx"), sheet_name=i)
+            df.append(df__)
+        df = pandas.concat(df)
+        df = df[[c for c in df.columns if c in col.keys()]]
+        df = df.rename(columns=col, errors="raise")
+        return df
 
 
 class HNSCC3DCTRT(TCIA):
@@ -361,6 +457,26 @@ class OropharyngealRadiomicsOutcomes(TCIA):
         if clinical: return clinical[0]
         else: return {}
 
+    def generate_clinical_df(self):
+        col = {
+            "TCIA Radiomics dummy ID of To_Submit_Final": "TCIA Radiomics dummy ID of To_Submit_Final",
+            "Gender": "Gender",
+            "Age at Diag": "Age at Diag",
+            "Smoking status": "Smoking status",
+            "Smoking status (Packs-Years)": "Smoking status (Packs-Years)",
+            "Cancer subsite of origin": "Cancer subsite of origin",
+            "HPV Status": "HPV Status",
+            "N-category": "N-category",
+            "AJCC Stage (7th edition)": "AJCC Stage (7th edition)",
+            "Total prescribed Radiation treatment dose": "Total prescribed Radiation treatment dose",    
+        }
+
+        df = pandas.read_csv(os.path.join(self.path, "Radiomics_Outcome_Prediction_in_OPC_ASRM_corrected.csv"))
+
+        df = df[[c for c in df.columns if c in col.keys()]]
+        df = df.rename(columns=col, errors="raise")
+        return df
+
 class QINHEADNECK(TCIA):
     def __init__(self, path):
         super().__init__(path)
@@ -373,6 +489,35 @@ class QINHEADNECK(TCIA):
         if clinical: return clinical[0]
         else: return {}
 
+    def generate_clinical_df(self):
+        col = {
+            "PatientID": "PatientID",
+            "Patient's Birth Date": "Patient's age",
+            "Patient's Sex": "Patient's Sex",
+            "Patient's Weight": "Patient's Weight",
+            "Patient's Height": "Patient's Height",
+            "History of Diabetes Mellitus": "History of Diabetes Mellitus",
+            "Alcohol consumption": "Alcohol consumption",
+            "Tobacco Smoking Behavior": "Tobacco Smoking Behavior",
+            "N Stage": "N Stage",
+            "Tumor staging": "Tumor staging",
+            "Primary tumor site": "Primary tumor site",
+            "Radiotherapy Procedure, Total radiation dose delivered": "Radiotherapy Procedure, Total radiation dose delivered",
+            "Radiotherapy Procedure, Radiation dose per fraction": "Radiotherapy Procedure, Radiation dose per fraction",
+        }
+
+        df1 = pandas.read_excel(os.path.join(self.path, "Batch_01-and-Batch_02-Clinical-Data_aug242020.xlsx"), header=0, sheet_name="uiowa_clinical_data_batch1_aug2")
+        df2 = pandas.read_excel(os.path.join(self.path, "Batch_01-and-Batch_02-Clinical-Data_aug242020.xlsx"), header=0, sheet_name="uiowa_clinical_data_batch2_aug2")
+        df = pandas.concat((df1, df2)).drop(index=0)
+
+        # convert birth date to age based on diagnostic date
+        df["Patient's Birth Date"] = pandas.to_datetime(df["Diagnositic Procedure, Biopsy, Date of procedure"]).dt.year - df["Patient's Birth Date"]
+
+        df = df[[c for c in df.columns if c in col.keys()]]
+        df = df.rename(columns=col, errors="raise")
+        return df
+
+
 class RADCURE(TCIA):
     def __init__(self, path):
         super().__init__(path)
@@ -382,3 +527,27 @@ class RADCURE(TCIA):
         clinical = clinical[clinical["patient_id"] == patient_id].to_dict('records')
         if clinical: return clinical[0]
         else: return {}
+
+    def generate_clinical_df(self):
+        col = {
+            "patient_id": "Patient ID number randomly assigned to each patient prior to anonymizing the DICOM PHI tag (0010,0020)",
+            "Age": "Patient age, years",
+            "Sex": "Patient sex, male or female",
+            "ECOG PS": "ECOG Performance status scale - assessment of patient's functional status;GRADE	ECOG PERFORMANCE STATUS;0= Fully active, able to carry on all pre-disease performance without restriction;1=Restricted in physically strenuous activity but ambulatory and able to carry out work of a light or sedentary nature, e.g., light house work, office work;2=Ambulatory and capable of all selfcare but unable to carry out any work activities; up and about more than 50% of waking hours;3=Capable of only limited selfcare; confined to bed or chair more than 50% of waking hours;4=Completely disabled; cannot carry on any selfcare; totally confined to bed or chair;5=Dead",
+            "Smoking PY": "Number of packs smoked in a year",
+            "Smoking Status": "Smoking status at first consultation:Current smoker, ex-smoker, non-smoker",
+            "Ds Site": "Primary cancer site",
+            "Subsite": "Primary cancer subsite",
+            "N": "AJCC 7th edition N category ",
+            "Stage": "AJCC 7th edition stage groups",
+            "Path": "Pathologic diagnosis/histology type",
+            "HPV": "Tumor HPV status determined by p16 IHC +/- HPV DNA by PCR. Blank cell indicates no data available.",
+            "Tx Modality": "How the surgery, radiation, and chemotherapy are combined - see mapping terminology",
+            "Chemo": "Yes=received concurrent chemoradiotherapy, none=did not receive concurrent chemoradiotherapy",
+            "Dose": "Total RT dose delivered during radiotherapy.",
+            "Fx": "Number of RT fractions delivered."}
+
+        df = pandas.read_excel(os.path.join(self.path, "RADCURE_Clinical_v04_20241219 (1).xlsx"))
+        df = df[[c for c in df.columns if c in col.keys()]]
+        df = df.rename(columns=col, errors="raise")
+        return df

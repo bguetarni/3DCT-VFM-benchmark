@@ -3,3 +3,8 @@ run the `build.bat` script by scpecifying the cohort to build
 
 # Compute features
 run the `features.bat` by specyfing the cohort and gpu as argument
+
+
+# Microsoft Copilot clinical description prompt
+
+"From this CSV table describing a list of patients based on different clinical information, generate a text description of each patient containing the informations present in the table, without including the patient ID, and return a CSV file containing this description with the exact ID of each patient. Missing informations with values like NaN must be excluded from the description and the description must be a human like clinical report."
