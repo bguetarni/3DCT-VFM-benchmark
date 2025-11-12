@@ -41,7 +41,7 @@ if __name__ == "__main__":
     ct_nii_path = os.path.join(args.tmp_folder, f"volume.{int(time.time()*10)}.nii.gz")
 
     features = []
-    for id_, p in tqdm.tqdm(list(patients.items())[:2], ncols=50):   # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    for id_, p in tqdm.tqdm(list(patients.items()), ncols=50):
         if args.type != "llm":
             try:
                 p.sort_imaging()   # sort images to recover first CT scans (i.e., CT0)
