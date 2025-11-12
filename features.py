@@ -7,9 +7,8 @@ from models import CTFM, ModelGenesis, SuPreM, LLM
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--input', type=str, required=True, help='path to the cohort PICKLE file')
+    parser.add_argument('--input', type=str, required=True, help='path to folder containing cohorts PICKLE files')
     parser.add_argument('--output', type=str, required=True, help='path to folder to save features')
-    parser.add_argument('--tmp_folder', type=str, required=True, help='path where temporary files (Nifti, DICOM) are saved')
     parser.add_argument('--overwrite', action="store_true", default=False, help='weither to overwrite features file if already existing')
     parser.add_argument('--type', type=str, default=False, choices=["ct-fm", "suprem", "model-genesis", "llm"], help="type of features")
     parser.add_argument('--cohort', type=str, required=True, choices=["artix", "hecktor", "headneckctatlas", "headneckpetct", "hnscc3dctrt", "oropharyngealradiomicsoutcomes", "qinheadneck", "radcure"], 
@@ -31,21 +30,17 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("using device ", device)
 
-    with open(args.input, "rb") as f:
+    with open(os.path.join(args.input, f"{args.cohort}.pickle"), "rb") as f:
         print("loading patients...")
         patients = pickle.load(f)
         print(f"found {len(patients)} patients in {args.input}")
-
-    # create temporary folder for saving nifti files
-    os.makedirs(args.tmp_folder, exist_ok=True)
-    ct_nii_path = os.path.join(args.tmp_folder, f"volume.{int(time.time()*10)}.nii.gz")
 
     features = []
     for id_, p in tqdm.tqdm(list(patients.items()), ncols=50):
         if args.type != "llm":
             try:
                 p.sort_imaging()   # sort images to recover first CT scans (i.e., CT0)
-                p.ct[0].convert2nifti(ct_nii_path)   # convert first scan
+                input_path = p.ct[0].path
             except (ValueError, KeyError):
                 continue
         else:
@@ -55,7 +50,7 @@ if __name__ == "__main__":
             if args.cohort == "artix":   # handle specific case
                 df[id_col] = df[id_col].apply(lambda i: str(i).zfill(3))
             
-            ct_nii_path = df[df[id_col] == id_][desc_col].item()
+            input_path = df[df[id_col] == id_][desc_col].item()
 
         match args.type:
             case "ct-fm":
@@ -69,7 +64,7 @@ if __name__ == "__main__":
             case _:
                 raise ValueError(f"argument --type value not implemented: {args.type}")
         
-        output = infer(ct_nii_path)
+        output = infer(input_path)
         fts = output.flatten()
         for j, f in enumerate(fts):
             features.append({"name": j, "value": f, "features": args.type, "patient": id_})

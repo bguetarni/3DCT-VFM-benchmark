@@ -1,7 +1,7 @@
 import os
 import torch
 from monai.networks.nets import SegResNet
-from monai.transforms import EnsureChannelFirstd, Compose, LoadImaged, ScaleIntensityRanged, ToTensord, CenterSpatialCropd
+from monai.transforms import EnsureChannelFirstd, Compose, LoadImaged, ScaleIntensityRanged, ToTensord, CenterSpatialCropd, Flipd, SpatialCropd
 
 def infer(preprocess, model, input, device):
     with torch.no_grad():
@@ -21,7 +21,10 @@ def load(device, checkpoint=None):
             LoadImaged(keys=["image"]),
             EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
             ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True,),
-            CenterSpatialCropd(keys=["image"], roi_size=(200, 300, 300)),
+            Flipd(keys=["image"], spatial_axis=-1),
+            SpatialCropd(keys=["image"], roi_start=(0,0,0), roi_end=(512,512,200)),
+            Flipd(keys=["image"], spatial_axis=-1),
+            CenterSpatialCropd(keys=["image"], roi_size=(350,350,200)),
             ToTensord(keys=["image"]),
         ])
 

@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from monai.transforms import EnsureChannelFirstd, Compose, LoadImaged, ScaleIntensityRanged, ToTensord, CenterSpatialCropd
+from monai.transforms import EnsureChannelFirstd, Compose, LoadImaged, ScaleIntensityRanged, ToTensord, Flipd, SpatialCropd, CenterSpatialCropd
 
 class ContBatchNorm3d(nn.modules.batchnorm._BatchNorm):
     def _check_input_dim(self, input):
@@ -163,7 +163,10 @@ def load(device, checkpoint=None):
     [
         LoadImaged(keys=["image"]),
         EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
-        CenterSpatialCropd(keys=["image"], roi_size=(200, 300, 300)),
+        Flipd(keys=["image"], spatial_axis=-1),
+        SpatialCropd(keys=["image"], roi_start=(0,0,0), roi_end=(512,512,200)),
+        Flipd(keys=["image"], spatial_axis=-1),
+        CenterSpatialCropd(keys=["image"], roi_size=(350,350,200)),
         ToTensord(keys=["image"]),
     ])
     

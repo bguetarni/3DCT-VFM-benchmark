@@ -1,6 +1,6 @@
 import torch
 from lighter_zoo import SegResEncoder
-from monai.transforms import Compose, LoadImage, EnsureType, Orientation, ScaleIntensityRange, CropForeground, CenterSpatialCrop
+from monai.transforms import Compose, LoadImage, EnsureType, Orientation, ScaleIntensityRange, CenterSpatialCrop, Flip, SpatialCrop
 
 def infer(preprocess, model, input, device):
     with torch.no_grad():
@@ -29,8 +29,11 @@ def load(device):
             b_max=1,        # Target max
             clip=True       # Clip values outside range
         ),
-        # CropForeground(),    # Remove background to reduce computation
-        CenterSpatialCrop((200, 300, 300)),
+
+        Flip(spatial_axis=-1),
+        SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,200)),
+        Flip(spatial_axis=-1),
+        CenterSpatialCrop(roi_size=(350,350,200)),
     ])
 
     infer_ = lambda i: infer(preprocess, model, i, device)
