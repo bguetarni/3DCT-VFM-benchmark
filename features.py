@@ -18,6 +18,9 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
     args = parser.parse_args()
 
+    if args.type == "llm" and args.description is None:
+        raise ValueError("If argument type is llm, then argument description must be provided")
+
     out_path = os.path.join(args.output, args.cohort, f"{args.type}.csv")
     os.makedirs(os.path.split(out_path)[0], exist_ok=True)
     if os.path.exists(out_path) and not(args.overwrite):
@@ -52,7 +55,7 @@ if __name__ == "__main__":
             if args.cohort == "artix":   # handle specific case
                 df[id_col] = df[id_col].apply(lambda i: str(i).zfill(3))
             
-            ct_nii_path = df[df[id_col] == id_][desc_col].item
+            ct_nii_path = df[df[id_col] == id_][desc_col].item()
 
         match args.type:
             case "ct-fm":
