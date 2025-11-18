@@ -51,6 +51,8 @@ class DICOM(ABC):
             return os.path.join(self.path, os.listdir(self.path)[0])
         elif self.path.endswith(".dcm") or self.path.endswith(".dicom"):
             return self.path
+        elif self.path.endswith(".nii.gz"):   # handle HECKTOR 2025 data
+            return self.path
         else:
             raise FileNotFoundError(f"DICOM file not found with path {self.path}")
         
@@ -136,6 +138,9 @@ class DICOM(ABC):
         """
 
         path = self.get_dcm_path()
+
+        if path.endswith(".nii.gz"):   # handle HECKTOR 2025 data
+            return None
 
         try:
             dcm = pydicom.dcmread(path)

@@ -1,7 +1,11 @@
+import torch
 from sentence_transformers import SentenceTransformer
 
-def load(device): 
-    model = SentenceTransformer("sentence-transformers/embeddinggemma-300m-medical")
+def infer(input, useless_arg_1, model, useless_arg_2):
+    with torch.no_grad():
+        return model.encode(input)
+
+def load(device, llm_name):
+    model = SentenceTransformer(llm_name)
     model.eval().to(device=device)
-    infer_ = lambda i: model.encode_document(i)
-    return infer_
+    return infer, None, model

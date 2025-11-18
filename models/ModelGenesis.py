@@ -117,16 +117,16 @@ class UNet3D(nn.Module):
         self.down_tr256 = DownTransition(128,2,act)
         self.down_tr512 = DownTransition(256,3,act)
 
-        self.up_tr256 = UpTransition(512, 512,2,act)
-        self.up_tr128 = UpTransition(256,256, 1,act)
-        self.up_tr64 = UpTransition(128,128,0,act)
-        self.out_tr = OutputTransition(64, n_class)
+        # self.up_tr256 = UpTransition(512, 512,2,act)
+        # self.up_tr128 = UpTransition(256,256, 1,act)
+        # self.up_tr64 = UpTransition(128,128,0,act)
+        # self.out_tr = OutputTransition(64, n_class)
 
     def forward(self, x):
-        self.out64, self.skip_out64 = self.down_tr64(x)
-        self.out128,self.skip_out128 = self.down_tr128(self.out64)
-        self.out256,self.skip_out256 = self.down_tr256(self.out128)
-        self.out512, self.skip_out512 = self.down_tr512(self.out256)
+        self.out64, _ = self.down_tr64(x)
+        self.out128, _ = self.down_tr128(self.out64)
+        self.out256, _ = self.down_tr256(self.out128)
+        self.out512, _ = self.down_tr512(self.out256)
 
         # self.out_up_256 = self.up_tr256(self.out512,self.skip_out256)
         # self.out_up_128 = self.up_tr128(self.out_up_256, self.skip_out128)
@@ -136,14 +136,14 @@ class UNet3D(nn.Module):
         # return self.out
         return self.out512
 
-def infer(preprocess, model, input, device):
+def infer(input, preprocess, model, device):
     with torch.no_grad():
         input_tensor = preprocess({"image": input})
         input_tensor = input_tensor["image"]
         input_tensor = input_tensor.unsqueeze(dim=0).to(device)
-        output = model(input_tensor)
+        output = model(input_tensor).cpu()
         avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1)
-        return avg_output.cpu().numpy()
+        return avg_output.numpy()
 
 def load(device, checkpoint=None):
     if not(checkpoint):
@@ -156,7 +156,7 @@ def load(device, checkpoint=None):
     unParalled_state_dict = {}
     for key in state_dict.keys():
         unParalled_state_dict[key.replace("module.", "")] = state_dict[key]
-    model.load_state_dict(unParalled_state_dict)
+    model.load_state_dict(unParalled_state_dict, strict=False)
     model.eval().to(device=device)
 
     transforms_ = Compose(
@@ -166,9 +166,8 @@ def load(device, checkpoint=None):
         Flipd(keys=["image"], spatial_axis=-1),
         SpatialCropd(keys=["image"], roi_start=(0,0,0), roi_end=(512,512,200)),
         Flipd(keys=["image"], spatial_axis=-1),
-        CenterSpatialCropd(keys=["image"], roi_size=(350,350,200)),
+        CenterSpatialCropd(keys=["image"], roi_size=(256,256,200)),
         ToTensord(keys=["image"]),
     ])
     
-    infer_ = lambda i: infer(transforms_, model, i, device)
-    return infer_
+    return infer, transforms_, model

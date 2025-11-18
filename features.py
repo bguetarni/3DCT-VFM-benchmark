@@ -1,4 +1,4 @@
-import tqdm, os, argparse, pickle, time
+import tqdm, os, argparse, pickle
 import pandas
 import torch
 
@@ -10,7 +10,12 @@ if __name__ == "__main__":
     parser.add_argument('--input', type=str, required=True, help='path to folder containing cohorts PICKLE files')
     parser.add_argument('--output', type=str, required=True, help='path to folder to save features')
     parser.add_argument('--overwrite', action="store_true", default=False, help='weither to overwrite features file if already existing')
-    parser.add_argument('--type', type=str, default=False, choices=["ct-fm", "suprem", "model-genesis", "llm"], help="type of features")
+    parser.add_argument('--type', type=str, required=True, choices=["ct-fm", "suprem", "model-genesis", "llm"], help="type of features")
+    parser.add_argument('--name', type=str, default=None, choices=[
+        "sentence-transformers/embeddinggemma-300m-medical",
+        "FremyCompany/BioLORD-2023-M",
+        "pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb",
+        ])
     parser.add_argument('--cohort', type=str, required=True, choices=["artix", "hecktor", "headneckctatlas", "headneckpetct", "hnscc3dctrt", "oropharyngealradiomicsoutcomes", "qinheadneck", "radcure"], 
                         help='which cohort to build (change for certain parts)')
     parser.add_argument('--description', type=str, help='path where Microsoft Copilot descriptions are saved')
@@ -20,7 +25,11 @@ if __name__ == "__main__":
     if args.type == "llm" and args.description is None:
         raise ValueError("If argument type is llm, then argument description must be provided")
 
-    out_path = os.path.join(args.output, args.cohort, f"{args.type}.csv")
+    if args.type != "llm":
+        out_path = os.path.join(args.output, args.cohort, f"{args.type}.csv")
+    else:
+        out_path = os.path.join(args.output, args.cohort, f"{args.type}-{os.path.split(args.name)[1]}.csv")
+    
     os.makedirs(os.path.split(out_path)[0], exist_ok=True)
     if os.path.exists(out_path) and not(args.overwrite):
         print(f"WARNING: exiting because destination file already exists ({out_path}). To overwrite, set argument --overwrite to True")
@@ -34,6 +43,19 @@ if __name__ == "__main__":
         print("loading patients...")
         patients = pickle.load(f)
         print(f"found {len(patients)} patients in {args.input}")
+
+    print(f"loading model {args.type} ({args.name})...")
+    match args.type:
+        case "ct-fm":
+            infer, preprocess, model = CTFM.load(device)
+        case "suprem":
+            infer, preprocess, model = SuPreM.load(device)
+        case "model-genesis":
+            infer, preprocess, model = ModelGenesis.load(device)
+        case "llm":
+            infer, preprocess, model = LLM.load(device, args.name)
+        case _:
+            raise ValueError(f"argument --type value not implemented: {args.type}")
 
     features = []
     for id_, p in tqdm.tqdm(list(patients.items()), ncols=50):
@@ -50,24 +72,15 @@ if __name__ == "__main__":
             if args.cohort == "artix":   # handle specific case
                 df[id_col] = df[id_col].apply(lambda i: str(i).zfill(3))
             
-            input_path = df[df[id_col] == id_][desc_col].item()
+            if not(id_ in df[id_col].values):
+                continue
 
-        match args.type:
-            case "ct-fm":
-                infer = CTFM.load(device)
-            case "suprem":
-                infer = SuPreM.load(device)
-            case "model-genesis":
-                infer = ModelGenesis.load(device)
-            case "llm":
-                infer = LLM.load(device)
-            case _:
-                raise ValueError(f"argument --type value not implemented: {args.type}")
+            input_path = df[df[id_col] == id_][desc_col].values[0]
         
-        output = infer(input_path)
+        output = infer(input_path, preprocess, model, device)
         fts = output.flatten()
         for j, f in enumerate(fts):
-            features.append({"name": j, "value": f, "features": args.type, "patient": id_})
+            features.append({"name": str(j), "value": f, "features": args.type, "patient": id_})
 
     # save to csv
     pandas.DataFrame(features).to_csv(out_path, index=False)

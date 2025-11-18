@@ -2,13 +2,13 @@ import torch
 from lighter_zoo import SegResEncoder
 from monai.transforms import Compose, LoadImage, EnsureType, Orientation, ScaleIntensityRange, CenterSpatialCrop, Flip, SpatialCrop
 
-def infer(preprocess, model, input, device):
+def infer(input, preprocess, model, device):
     with torch.no_grad():
         input_tensor = preprocess(input)
         input_tensor = input_tensor.unsqueeze(dim=0).to(device)
-        output = model(input_tensor)[-1]
+        output = model(input_tensor)[-1].cpu()
         avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1)
-        return avg_output.cpu().numpy()
+        return avg_output.numpy()
 
 
 def load(device):
@@ -31,10 +31,9 @@ def load(device):
         ),
 
         Flip(spatial_axis=-1),
-        SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,200)),
+        SpatialCrop(roi_start=(0,0,0), roi_end=(200,512,512)),
         Flip(spatial_axis=-1),
-        CenterSpatialCrop(roi_size=(350,350,200)),
+        CenterSpatialCrop(roi_size=(200,350,350)),
     ])
 
-    infer_ = lambda i: infer(preprocess, model, i, device)
-    return infer_
+    return infer, preprocess, model

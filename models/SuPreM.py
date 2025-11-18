@@ -3,14 +3,14 @@ import torch
 from monai.networks.nets import SegResNet
 from monai.transforms import EnsureChannelFirstd, Compose, LoadImaged, ScaleIntensityRanged, ToTensord, CenterSpatialCropd, Flipd, SpatialCropd
 
-def infer(preprocess, model, input, device):
+def infer(input, preprocess, model, device):
     with torch.no_grad():
         input_tensor = preprocess({"image": input})
         input_tensor = input_tensor["image"]
         input_tensor = input_tensor.unsqueeze(dim=0).to(device)
-        output, _ = model.encode(input_tensor)
+        output = model.encode(input_tensor)[0].cpu()
         avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1)
-        return avg_output.cpu().numpy()
+        return avg_output.numpy()
 
 def load(device, checkpoint=None):
     if not(checkpoint):
@@ -52,6 +52,4 @@ def load(device, checkpoint=None):
             amount += 1
     assert amount == len(store_dict), "the model is not loaded successfully"
     model.eval().to(device=device)
-
-    infer_ = lambda i: infer(test_transforms, model, i, device)
-    return infer_
+    return infer, test_transforms, model
