@@ -2,7 +2,7 @@ import tqdm, os, argparse, pickle
 import pandas
 import torch
 
-from models import CTFM, ModelGenesis, SuPreM, LLM
+from models import CTFM, SuPreM, LLM, VISTA3D
 
 
 if __name__ == "__main__":
@@ -10,7 +10,7 @@ if __name__ == "__main__":
     parser.add_argument('--input', type=str, required=True, help='path to folder containing cohorts PICKLE files')
     parser.add_argument('--output', type=str, required=True, help='path to folder to save features')
     parser.add_argument('--overwrite', action="store_true", default=False, help='weither to overwrite features file if already existing')
-    parser.add_argument('--type', type=str, required=True, choices=["ct-fm", "suprem", "model-genesis", "llm"], help="type of features")
+    parser.add_argument('--type', type=str, required=True, choices=["ct-fm", "suprem", "vista3d", "llm"], help="type of features")
     parser.add_argument('--name', type=str, default=None, choices=[
         "sentence-transformers/embeddinggemma-300m-medical",
         "FremyCompany/BioLORD-2023-M",
@@ -50,8 +50,8 @@ if __name__ == "__main__":
             infer, preprocess, model = CTFM.load(device)
         case "suprem":
             infer, preprocess, model = SuPreM.load(device)
-        case "model-genesis":
-            infer, preprocess, model = ModelGenesis.load(device)
+        case "vista3d":
+            infer, preprocess, model = VISTA3D.load(device)
         case "llm":
             infer, preprocess, model = LLM.load(device, args.name)
         case _:
