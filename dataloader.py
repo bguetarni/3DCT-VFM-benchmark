@@ -1,10 +1,17 @@
 from abc import ABC, abstractmethod
-import glob, os, tqdm, pathlib, re
+import glob, os, tqdm, pathlib, re, pickle
 import pydicom
 import pandas
+import datetime
 
 import dicom_class
 import dicom_utils
+
+recurrence_2y_name = "R2y"
+recurrence_5y_name = "R5y"
+
+def convert2date(dt):
+    return datetime.datetime.strptime(dt, "%d/%m/%Y").date()
 
 
 class BaseLoader(ABC):
@@ -197,6 +204,59 @@ class ARTIX(BaseLoader):
 
         df = df.rename(columns=col, errors="raise")
         return df
+    
+    def build_dataset(self, path_=None):
+        """
+        Return features and labels as pandas.Dataframe
+        """
+        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+
+        with open(base_path.joinpath("pickle datasets", "artix.pickle"), "rb") as f:
+            patients = pickle.load(f)
+
+        # concatenate features and modalities
+        features = []
+        for file_ in base_path.joinpath("features", "artix").iterdir():
+            fts = pandas.read_csv(file_)
+            fts["center"] = "CEM"   # Centre Eugene Marquis
+            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["features"] = file_.name
+            features.append(fts)        
+        features = pandas.concat(features)
+
+        # build labels
+        label = []
+        for id_, p in patients.items():
+            r2y, r5y = None, None
+
+            progdt = p.clinical["PROGDT"]   # date of progression
+            rtend = p.clinical["RTENDT"]   # date of end RT
+            lastfollow = p.clinical["DDNDT"]   # date of last follow-up
+            prog = p.clinical["PROG"]   # binary indicator of progression occuring during follow-up
+            
+            if pandas.isna(progdt) or pandas.isna(rtend):
+                prog_endrt_days = None
+            else:
+                prog_endrt_days = (convert2date(progdt) - convert2date(rtend)).days
+
+            if lastfollow is None or pandas.isna(rtend):
+                endfollow_endrt_days = None
+            else:
+                endfollow_endrt_days = (convert2date(lastfollow) - convert2date(rtend)).days
+
+            if prog == "Yes" and not(prog_endrt_days is None):
+                r2y = int(prog_endrt_days > 2*365)
+                r5y = int(prog_endrt_days > 5*365)
+            elif not(endfollow_endrt_days is None):
+                r2y = 1 if endfollow_endrt_days > 2*365 else None
+                r5y = 1 if endfollow_endrt_days > 5*365 else None
+            else:
+                pass
+
+            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+        label = pandas.DataFrame(label)
+
+        return features, label
 
 
 class HECKTOR(BaseLoader):
@@ -283,6 +343,43 @@ class HECKTOR(BaseLoader):
         df = df[[c for c in df.columns if c in col.keys()]]
         df = df.rename(columns=col, errors="raise")
         return df
+    
+    def build_dataset(self, path_=None):
+        """
+        Return features and labels as pandas.Dataframe
+        """
+        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+
+        with open(base_path.joinpath("pickle datasets", "hecktor.pickle"), "rb") as f:
+            patients = pickle.load(f)
+
+        centerid = pandas.DataFrame([{"patient": p.clinical['PatientID'], "center": p.clinical['CenterID']} for p in patients.values()])
+
+        # concatenate features and modalities
+        features = []
+        for file_ in base_path.joinpath("features", "hecktor").iterdir():
+            fts = pandas.read_csv(file_)
+            fts = pandas.merge(fts, centerid, how="outer", on="patient")   # add center IDs
+            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["features"] = file_.name
+            features.append(fts)        
+        features = pandas.concat(features)
+
+        # build labels
+        label = []
+        for id_, p in patients.items():
+            try:
+                rfs = p.clinical["RFS"]
+                r2y = int(rfs > 2*365)
+                r5y = int(rfs > 5*365)
+            except KeyError:
+                r2y, r5y = None, None
+
+            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+        label = pandas.DataFrame(label)
+
+        return features, label
+
 
 class TCIA(BaseLoader):
     def __init__(self, path):
@@ -378,6 +475,39 @@ class HeadNeckCTAtlas(TCIA):
         df = df[[c for c in df.columns if c in col.keys()]]
         df = df.rename(columns=col, errors="raise")
         return df
+    
+    def build_dataset(self, path_=None):
+        """
+        Return features and labels as pandas.Dataframe
+        """
+        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+
+        with open(base_path.joinpath("pickle datasets", "headneckctatlas.pickle"), "rb") as f:
+            patients = pickle.load(f)
+
+        # concatenate features and modalities
+        features = []
+        for file_ in base_path.joinpath("features", "headneckctatlas").iterdir():
+            fts = pandas.read_csv(file_)
+            fts["center"] = "MDA"
+            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["features"] = file_.name
+            features.append(fts)        
+        features = pandas.concat(features)
+
+        # build labels
+        label = []
+        for id_, p in patients.items():
+            try:
+                rfs = p.clinical["Disease-free interval (months)"]
+                r2y = int(rfs > 2*12)
+                r5y = int(rfs > 5*12)
+            except KeyError:
+                r2y, r5y = None, None
+
+            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+        label = pandas.DataFrame(label)
+        return features, label
 
 
 class HeadNeckPETCT(TCIA):
@@ -414,6 +544,54 @@ class HeadNeckPETCT(TCIA):
         df = df[[c for c in df.columns if c in col.keys()]]
         df = df.rename(columns=col, errors="raise")
         return df
+    
+    def build_dataset(self, path_=None):
+        """
+        Return features and labels as pandas.Dataframe
+        """
+        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+
+        with open(base_path.joinpath("pickle datasets", "headneckpetct.pickle"), "rb") as f:
+            patients = pickle.load(f)
+
+        # concatenate features and modalities
+        features = []
+        for file_ in base_path.joinpath("features", "headneckpetct").iterdir():
+            fts = pandas.read_csv(file_)
+            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["features"] = file_.name
+            features.append(fts)        
+        features = pandas.concat(features)
+
+        # build labels
+        label = []
+        for id_, p in patients.items():
+            diag_endrt_dt = p.clinical["Time – diagnosis to end treatment (days)"]
+            diag_lr_dt = p.clinical["Time – diagnosis to LR (days)"]
+            diag_dm_dt = p.clinical["Time – diagnosis to DM (days)"]
+            diag_death = p.clinical["Time – diagnosis to Death (days)"]
+            diag_lastfollow_dt = p.clinical["Time – diagnosis to last follow-up (days)"]
+
+            if pandas.isna(diag_endrt_dt):
+                r2y = None
+                r5y = None
+            elif pandas.notna(diag_lr_dt) or pandas.notna(diag_dm_dt):
+                valid_dt = tuple(filter(pandas.notna, (diag_lr_dt, diag_dm_dt)))
+                endrt_event_dt = min(map(lambda i: i - diag_endrt_dt, valid_dt))
+                r2y = int(endrt_event_dt > 2*365)
+                r5y = int(endrt_event_dt > 5*365)
+            elif pandas.notna(diag_death) or pandas.notna(diag_lastfollow_dt):
+                valid_dt = tuple(filter(pandas.notna, (diag_death, diag_lastfollow_dt)))
+                endrt_event_dt = min(map(lambda i: i - diag_endrt_dt, valid_dt))
+                r2y = 1 if endrt_event_dt > 2*365 else None
+                r5y = 1 if endrt_event_dt > 5*365 else None
+            else:
+                r2y = None
+                r5y = None
+
+            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+        label = pandas.DataFrame(label)
+        return features, label
 
 
 class HNSCC3DCTRT(TCIA):
@@ -447,6 +625,7 @@ class HNSCC3DCTRT(TCIA):
         if clinical: return clinical[0]
         else: return {}
 
+
 class OropharyngealRadiomicsOutcomes(TCIA):
     def __init__(self, path):
         super().__init__(path)
@@ -476,6 +655,55 @@ class OropharyngealRadiomicsOutcomes(TCIA):
         df = df[[c for c in df.columns if c in col.keys()]]
         df = df.rename(columns=col, errors="raise")
         return df
+    
+    def build_dataset(self, path_=None):
+        """
+        Return features and labels as pandas.Dataframe
+        """
+        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+
+        with open(base_path.joinpath("pickle datasets", "oropharyngealradiomicsoutcomes.pickle"), "rb") as f:
+            patients = pickle.load(f)
+
+        # concatenate features and modalities
+        features = []
+        for file_ in base_path.joinpath("features", "oropharyngealradiomicsoutcomes").iterdir():
+            fts = pandas.read_csv(file_)
+            fts["center"] = "MDA"
+            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["features"] = file_.name
+            features.append(fts)        
+        features = pandas.concat(features)
+
+        # build labels
+        label = []
+        for id_, p in patients.items():
+            try:
+                if any([p.clinical[k] == "No" for k in ["Local control", "Regional control", "Freedom from distant metastasis"]]):
+                    control_duration_pairs = [
+                        (p.clinical["Local control"], p.clinical["Local control_duration of Merged updated ASRM V2"]),
+                        (p.clinical["Regional control"], p.clinical["Regional control_duration of Merged updated ASRM V2"]),
+                        (p.clinical["Freedom from distant metastasis"], p.clinical["Freedom from distant metastasis_duration of Merged updated ASRM V2"]),
+                        ]
+                    control_duration_pairs = tuple(filter(lambda i: i[0] == "No" , control_duration_pairs))
+                    endrt_event_dt = min(map(lambda i: i[1] - p.clinical["Radiation Treatment_duration"], control_duration_pairs))
+                    r2y = int(endrt_event_dt > 2*365)
+                    r5y = int(endrt_event_dt > 5*365)
+                elif p.clinical["Relapse-free survival"] == "Yes":
+                    endrt_event_dt = p.clinical["Days to last FU"] - p.clinical["Radiation Treatment_duration"]
+                    r2y = 1 if endrt_event_dt > 2*365 else None
+                    r5y = 1 if endrt_event_dt > 5*365 else None
+                else:
+                    r2y = None
+                    r5y = None
+            except KeyError:
+                r2y = None
+                r5y = None
+
+            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+        label = pandas.DataFrame(label)
+        return features, label
+
 
 class QINHEADNECK(TCIA):
     def __init__(self, path):
@@ -516,6 +744,54 @@ class QINHEADNECK(TCIA):
         df = df[[c for c in df.columns if c in col.keys()]]
         df = df.rename(columns=col, errors="raise")
         return df
+    
+    def build_dataset(self, path_=None):
+        """
+        Return features and labels as pandas.Dataframe
+        """
+        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+
+        with open(base_path.joinpath("pickle datasets", "qinheadneck.pickle"), "rb") as f:
+            patients = pickle.load(f)
+
+        # concatenate features and modalities
+        features = []
+        for file_ in base_path.joinpath("features", "qinheadneck").iterdir():
+            fts = pandas.read_csv(file_)
+            fts["center"] = "UIHC"   # University of Iowa Hospital and Clinics
+            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["features"] = file_.name
+            features.append(fts)        
+        features = pandas.concat(features)
+
+        # build labels
+        label = []
+        for id_, p in patients.items():
+            try:
+                rtend = p.clinical["Radiotherapy Procedure, Date treatment stopped"]
+                if pandas.isna(rtend):
+                    r2y = None
+                    r5y = None
+                else:
+                    try:
+                        if pandas.notna(p.clinical["Date of cancer recurrence"]):
+                            endrt_event_dt = (p.clinical["Date of cancer recurrence"] - rtend).days
+                            r2y = int(endrt_event_dt > 2*365)
+                            r5y = int(endrt_event_dt > 5*365)
+                        else:
+                            endrt_event_dt = (p.clinical["Follow-up visit date"] - rtend).days
+                            r2y = 1 if endrt_event_dt > 2*365 else None
+                            r5y = 1 if endrt_event_dt > 5*365 else None
+                    except (KeyError, TypeError):
+                        r2y = None
+                        r5y = None
+            except KeyError:
+                r2y = None
+                r5y = None
+
+            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+        label = pandas.DataFrame(label)
+        return features, label
 
 
 class RADCURE(TCIA):
@@ -551,3 +827,63 @@ class RADCURE(TCIA):
         df = df[[c for c in df.columns if c in col.keys()]]
         df = df.rename(columns=col, errors="raise")
         return df
+    
+    def build_dataset(self, path_=None):
+        """
+        Return features and labels as pandas.Dataframe
+        """
+        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+
+        with open(base_path.joinpath("pickle datasets", "radcure.pickle"), "rb") as f:
+            patients = pickle.load(f)
+
+        # concatenate features and modalities
+        features = []
+        for file_ in base_path.joinpath("features", "radcure").iterdir():
+            fts = pandas.read_csv(file_)
+            fts["center"] = "UHN"   # University Health Network
+            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["features"] = file_.name
+            features.append(fts)        
+        features = pandas.concat(features)
+
+        # build labels
+        label = []
+        for id_, p in patients.items():
+            try:
+                # add fractions to rt start date to obtain RT end date
+                rtend = p.clinical["RT Start"].date() + datetime.timedelta(days=int(p.clinical["Fx"] / 5)*7)
+
+                event_dt = tuple(filter(pandas.notna, [p.clinical[k] for k in ["Date Local", "Date Regional", "Date Distant"]]))
+                if event_dt:
+                    event_dt = event_dt[0] if len(event_dt) == 1 else min(*event_dt)
+                    endrt_event_dt = (event_dt.date() - rtend).days
+                    r2y = int(endrt_event_dt > 2*365)
+                    r5y = int(endrt_event_dt > 5*365)
+                else:
+                    if pandas.notna(p.clinical["Last FU"]):
+                        endrt_event_dt = (p.clinical["Last FU"].date() - rtend).days
+                        r2y = 1 if endrt_event_dt > 2*365 else None
+                        r5y = 1 if endrt_event_dt > 5*365 else None
+                    else:
+                        r2y = None
+                        r5y = None
+            except ValueError:
+                r2y = None
+                r5y = None
+
+            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+        label = pandas.DataFrame(label)
+        return features, label
+
+
+cohorts_map = {
+    "artix": ARTIX,
+    "hecktor": HECKTOR,
+    "headneckctatlas": HeadNeckCTAtlas,
+    "headneckpetct": HeadNeckPETCT,
+    "hnscc3dctrt": HNSCC3DCTRT,
+    "oropharyngealradiomicsoutcomes": OropharyngealRadiomicsOutcomes,
+    "qinheadneck": QINHEADNECK,
+    "radcure": RADCURE,
+}

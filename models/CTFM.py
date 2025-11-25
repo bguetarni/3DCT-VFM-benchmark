@@ -29,7 +29,6 @@ def load(device):
             b_max=1,        # Target max
             clip=True       # Clip values outside range
         ),
-
         Flip(spatial_axis=-1),
         SpatialCrop(roi_start=(0,0,0), roi_end=(200,512,512)),
         Flip(spatial_axis=-1),

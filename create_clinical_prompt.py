@@ -1,13 +1,14 @@
 import os, argparse, pickle, logging
 from datetime import datetime
-from dataloader import ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, HNSCC3DCTRT, OropharyngealRadiomicsOutcomes, QINHEADNECK, RADCURE
+from dataloader import cohorts_map
+from dataloader import *
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--overwrite', action="store_true", default=False, help='weither to overwrite dataset if already existing')
     parser.add_argument('--input', type=str, required=True, help='path to dataset patients folder')
     parser.add_argument('--output', type=str, required=True, help='path to pickle file to save')
-    parser.add_argument('--cohort', type=str, required=True, choices=["artix", "hecktor", "headneckctatlas", "headneckpetct", "hnscc3dctrt", "oropharyngealradiomicsoutcomes", "qinheadneck", "radcure"], 
+    parser.add_argument('--cohort', type=str, required=True, choices=list(cohorts_map.keys()), 
                         help='which cohort to build (change for certain parts)')
     args = parser.parse_args()
 
@@ -16,26 +17,7 @@ if __name__ == "__main__":
         print(f"WARNING: exiting because destination file already exists ({args.output}). To overwrite, set argument --overwrite to True")
         exit(0)
 
-    match args.cohort:
-        case "artix":
-            loader = ARTIX(args.input)
-        case "hecktor":
-            loader = HECKTOR(args.input)
-        case "headneckctatlas":
-            loader = HeadNeckCTAtlas(args.input)
-        case "headneckpetct":
-            loader = HeadNeckPETCT(args.input)
-        case "hnscc3dctrt":
-            loader = HNSCC3DCTRT(args.input)
-        case "oropharyngealradiomicsoutcomes":
-            loader = OropharyngealRadiomicsOutcomes(args.input)
-        case "qinheadneck":
-            loader = QINHEADNECK(args.input)
-        case "radcure":
-            loader = RADCURE(args.input)
-        case _:
-            raise ValueError(f"argument --cohort value not implemented: {args.cohort}")
-
+    loader = cohorts_map[args.cohort](args.input)
     df = loader.generate_clinical_df()
     df.to_csv(output, index=False)
     print("Done")

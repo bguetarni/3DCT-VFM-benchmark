@@ -3,6 +3,7 @@ import pandas
 import torch
 
 from models import CTFM, SuPreM, LLM, VISTA3D
+from dataloader import cohorts_map
 
 
 if __name__ == "__main__":
@@ -11,12 +12,8 @@ if __name__ == "__main__":
     parser.add_argument('--output', type=str, required=True, help='path to folder to save features')
     parser.add_argument('--overwrite', action="store_true", default=False, help='weither to overwrite features file if already existing')
     parser.add_argument('--type', type=str, required=True, choices=["ct-fm", "suprem", "vista3d", "llm"], help="type of features")
-    parser.add_argument('--name', type=str, default=None, choices=[
-        "sentence-transformers/embeddinggemma-300m-medical",
-        "FremyCompany/BioLORD-2023-M",
-        "pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb",
-        ])
-    parser.add_argument('--cohort', type=str, required=True, choices=["artix", "hecktor", "headneckctatlas", "headneckpetct", "hnscc3dctrt", "oropharyngealradiomicsoutcomes", "qinheadneck", "radcure"], 
+    parser.add_argument('--name', type=str, default=None, choices=["sentence-transformers/embeddinggemma-300m-medical", "FremyCompany/BioLORD-2023-M", "pritamdeka/BioBERT-mnli-snli-scinli-scitail-mednli-stsb"])
+    parser.add_argument('--cohort', type=str, required=True, choices=list(cohorts_map.keys()), 
                         help='which cohort to build (change for certain parts)')
     parser.add_argument('--description', type=str, help='path where Microsoft Copilot descriptions are saved')
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
@@ -61,7 +58,7 @@ if __name__ == "__main__":
     for id_, p in tqdm.tqdm(list(patients.items()), ncols=50):
         if args.type != "llm":
             try:
-                p.sort_imaging()   # sort images to recover first CT scans (i.e., CT0)
+                p.sort_imaging()   # sort images to recover first CT scan (i.e., CT0)
                 input_path = p.ct[0].path
             except (ValueError, KeyError):
                 continue
