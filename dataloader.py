@@ -253,7 +253,7 @@ class ARTIX(BaseLoader):
             else:
                 pass
 
-            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, "center": "CEM", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
 
         return features, label
@@ -263,6 +263,7 @@ class HECKTOR(BaseLoader):
     def __init__(self, path):
         super().__init__(path)
         self.CLINICAL_MAPPING = {} #TODO
+        self.center_map = {1: 'CHUM', 2: 'CHUP', 3: 'CHUS', 6: 'HGJ', 7: 'HMR', 5: 'MDA', 8: 'USZ'}
 
     def build_patients(self, log=None):
         data = {}
@@ -291,6 +292,7 @@ class HECKTOR(BaseLoader):
 
             df = pandas.read_csv(os.path.join(self.path, "Task 2", "HECKTOR_2025_Training_Task_2.csv"))
             clinical = df[df["PatientID"] == str(id)].to_dict(orient="records")[0]
+            clinical["CenterID"] = self.center_map[clinical["CenterID"]]
 
             p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
             data.update({p.id: p})
@@ -375,7 +377,7 @@ class HECKTOR(BaseLoader):
             except KeyError:
                 r2y, r5y = None, None
 
-            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, "center": p.clinical["CenterID"], recurrence_2y_name: r2y, recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
 
         return features, label
@@ -505,7 +507,7 @@ class HeadNeckCTAtlas(TCIA):
             except KeyError:
                 r2y, r5y = None, None
 
-            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, "center": "MDA", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
         return features, label
 
@@ -554,10 +556,13 @@ class HeadNeckPETCT(TCIA):
         with open(base_path.joinpath("pickle datasets", "headneckpetct.pickle"), "rb") as f:
             patients = pickle.load(f)
 
+        centerid = pandas.DataFrame([{"patient": p.clinical['Patient #'], "center": p.clinical['center']} for p in patients.values()])
+
         # concatenate features and modalities
         features = []
         for file_ in base_path.joinpath("features", "headneckpetct").iterdir():
             fts = pandas.read_csv(file_)
+            fts = pandas.merge(fts, centerid, how="outer", on="patient")   # add center IDs
             fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
             fts["features"] = file_.name
             features.append(fts)        
@@ -589,7 +594,7 @@ class HeadNeckPETCT(TCIA):
                 r2y = None
                 r5y = None
 
-            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, "center": p.clinical['center'], recurrence_2y_name: r2y, recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
         return features, label
 
@@ -700,7 +705,7 @@ class OropharyngealRadiomicsOutcomes(TCIA):
                 r2y = None
                 r5y = None
 
-            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, "center": "MDA", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
         return features, label
 
@@ -789,7 +794,7 @@ class QINHEADNECK(TCIA):
                 r2y = None
                 r5y = None
 
-            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, "center": "UIHC", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
         return features, label
 
@@ -872,7 +877,7 @@ class RADCURE(TCIA):
                 r2y = None
                 r5y = None
 
-            label.append({"patient": id_, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, "center": "UHN", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
         return features, label
 
