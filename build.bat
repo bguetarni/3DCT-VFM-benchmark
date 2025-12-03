@@ -7,7 +7,7 @@ echo "artix"
 python build.py --input "E:\bilel\ARTIX\ARTIX" --output %OUTPUT% --cohort artix
 
 echo "hecktor"
-python build.py --input "E:\bilel\HECKTOR 2025 Training Data" --output %OUTPUT% --cohort hecktor
+python build.py --overwrite --input "E:\bilel\HECKTOR 2025 Training Data" --output %OUTPUT% --cohort hecktor
 
 echo "headneckctatlas"
 python build.py --input "F:\TCIA\Head-Neck-CT-Atlas" --output %OUTPUT% --cohort headneckctatlas

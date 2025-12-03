@@ -1,15 +1,137 @@
-import os, re, pickle, json, argparse, yaml
+import json
+import argparse
+import pathlib
+import os
+from itertools import chain
 import pandas
 import numpy as np
 import tqdm
-from sklearn.linear_model import LogisticRegression
+import sklearn
 from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, f1_score, log_loss, confusion_matrix
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import scale, minmax_scale
-from sklearn.utils.multiclass import unique_labels
-from radiomics import getFeatureClasses
+import torch
+import torch.nn.functional as F
+import coolname
 
-from dataloader import ARTIX, TCIA_HNSCC3DCTRT
+from dataloader import ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, QINHEADNECK, OropharyngealRadiomicsOutcomes, RADCURE
+from dataloader import recurrence_2y_name, recurrence_5y_name
+from classifiers.classifiers import Attention, Linear, Concat
+
+
+class DataLoader:
+    def __init__(self, base_path=None, X=None, Y=None, uniform_sampling=False):
+        self.base_path = base_path
+        self.X = X
+        self.Y = Y
+        self.uniform_sampling = uniform_sampling
+
+    def len(self):
+        return len(self.Y)
+    
+    def __getitem__(self, idx):
+        return self.X.loc[idx], self.Y.loc[idx]
+
+    def build_dataset(self):
+        features = pandas.DataFrame([])
+        labels = pandas.DataFrame([])
+        for loader in tqdm.tqdm([ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, QINHEADNECK, OropharyngealRadiomicsOutcomes, RADCURE], ncols=100):
+            loader = loader(None)
+            x, y = loader.build_dataset(self.base_path)
+            features = pandas.concat((features, x))
+            labels = pandas.concat((labels, y))
+        self.X = features
+        self.Y = labels
+
+    def prepare_data(self, exp_params, task):
+        features_name = list(chain.from_iterable(i.keys() for i in exp_params["dims"].values()))
+        self.X = self.X[self.X["features"].isin(features_name)]
+        self.X = self.X.pivot(index="patient", columns=["modality", "features", "name"], values="value")
+        self.X = self.X.sort_index(axis="columns")
+
+        self.Y = self.Y.set_index("patient")
+        if not(task in self.Y.columns):
+            raise ValueError(f"task {task} not valid. Validones are [{recurrence_2y_name}, {recurrence_5y_name}]")
+        self.Y = self.Y[["center", task]].rename(columns={task: "label"})
+
+        invalid_label_patients = self.Y[pandas.isna(self.Y["label"])].index
+        self.X = self.X.drop(index=invalid_label_patients, errors="ignore")
+        self.Y = self.Y.drop(index=invalid_label_patients)
+
+    def split(self, train_centers, test_centers, train_val_factor=0.8):
+        assert set(train_centers).isdisjoint(set(test_centers)), "train and test centers must be disjoint"
+
+        train_idx = list(self.Y["center"].isin(train_centers).index)
+        np.random.shuffle(train_idx)
+        n = int(train_val_factor*len(train_idx))
+        val_idx = train_idx[n:]
+        train_idx = train_idx[:n]
+
+        X_train = self.X.loc[self.X.index.isin(train_idx)]
+        Y_train = self.Y.loc[X_train.index]
+
+        X_valid = self.X.loc[self.X.index.isin(val_idx)]
+        Y_valid = self.Y.loc[X_valid.index]
+
+        X_test = self.X.loc[self.X.index.isin(self.Y["center"].isin(test_centers).index)]
+        Y_test = self.Y.loc[X_test.index]
+
+        return X_train, Y_train, X_valid, Y_valid, X_test, Y_test
+    
+    def shuffle(self):
+        idx = np.random.permutation(self.X.index)
+        self.X = self.X.reindex(idx)
+        self.Y = self.Y.reindex(idx)
+
+    def get_random_batch(self, n):
+        """
+        get random batch taking into account centers equality
+        """
+        if self.uniform_sampling:
+            centers = self.Y["center"].unique()
+            n_per_center = np.ceil(n / len(centers))
+            idx = [np.random.choice(self.Y[self.Y["center"] == c].index, size=n_per_center, replace=False) for c in centers]
+            idx = list(chain.from_iterable(idx))[:n]
+        else:
+            idx = np.random.choice(self.X.index, size=n, replace=False)
+        
+        x = self.X.loc[idx]
+        y = self.Y.loc[idx]
+
+        x = {m: {
+                k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()
+            } for m in x.columns.get_level_values("modality").unique()}
+        y = torch.tensor(y["label"].values)
+
+        return x, y
+    
+    def batch_iterator(self, n):
+        for idx in range(0, len(self.Y)-n, n):
+            indices = self.Y.index[idx:idx+n]
+            x = self.X.loc[indices]
+            y = self.Y.loc[indices]
+
+            x = {m: {
+                k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()
+            } for m in x.columns.get_level_values("modality").unique()}
+            y = torch.tensor(y["label"].values)
+
+            yield x, y
+        return StopIteration
+
+    def normalize(self, method="scale"):
+        match method:
+            case "scale":
+                fn = sklearn.preprocessing.scale
+            case "mnimax":
+                fn = sklearn.preprocessing.minmax_scale
+            case "unit":
+                fn = sklearn.preprocessing.normalize
+            case _:
+                fn = sklearn.preprocessing.scale
+        
+        # apply normalization function column-wise
+        for c in self.X.columns:
+            self.X[c] = fn(self.X[c])
+
 
 def zero_division(num, den):
     try:
@@ -20,253 +142,192 @@ def zero_division(num, den):
     except TypeError:
         return 0
 
-
-def build_dataset(internal_data, external_data, internal_features, external_features, combined_path):
-    print("loading cohorts...")
-    df = pandas.DataFrame([])
-    for loader, data, features, cohort in ((ARTIX(), internal_data, internal_features, "internal"), 
-                                           (TCIA_HNSCC3DCTRT(), external_data, external_features, "external")):
-        
-        features = pandas.read_csv(features)
-        features["cohort"] = cohort
-        
-        with open(data, "rb") as f:
-            patients = pickle.load(f)
-
-        for p in patients:
-            patient_df = []
-            for k, v in loader.load_clinical(p).items():
-                patient_df.append({"cohort": cohort, "features": "clinical", "name": k, "value": v, "patient": str(p.id)})
-
-            features = pandas.concat((features, pandas.DataFrame(patient_df)))
-        
-        df = pandas.concat((df, features))
-
-    print("saving dataset...")
-    pandas.DataFrame(df).to_csv(combined_path, index=False)
-
-
-def display_split_stats(split):
-    stats = {j: list(split).count(j) for j in set(split)}
+def display_split_stats(loader):
+    y = list(loader.Y["label"].values)
+    stats = {int(j): y.count(j) for j in set(y)}
     for j, c in stats.items():
-        print(f"\t {j}: {c} ({int(100*c/len(split))}%)")
+        print(f"\t {j}: {c} ({int(100*c/len(y))}%)")
 
-def cross_validation(X_internal, Y_internal, X_external, Y_external, normalization="minmax", bootstrap=None, feature_selection=None, feature_reduction_N=None):
+def send_to_device(x, device):
+    if isinstance(x, dict):
+        return {k: send_to_device(v, device) for k,v in x.items()}
+    elif isinstance(x, torch.Tensor):
+        return x.to(device)
+    else:
+        return torch.tensor(x).to(device)
+
+def compute_metrics(y_pred, y_pred_proba, y):
+    tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
+    m = {"acc": accuracy_score(y, y_pred),
+            "auc": roc_auc_score(y, y_pred),
+            "balanced_accuracy": balanced_accuracy_score(y, y_pred),
+            "f1_score": f1_score(y, y_pred, zero_division=0),
+            "specificity": zero_division(tn, (tn + fp)),
+            "sensitivity": zero_division(tp, (tp + fn)),
+            "log_loss": log_loss(y, y_pred_proba)}
+    return m
+
+def eval(model, loader, batch_size, device):
+    y_pred_proba = []
+    y_pred = []
+    y_true = []
+    for batch in loader.batch_iterator(batch_size):
+        if batch == StopIteration:
+            break
+        x, y = batch
+        with torch.no_grad():
+            pred_proba = model(send_to_device(x, device)).to("cpu")
+            pred_proba = F.sigmoid(pred_proba)
+            y_pred_proba.append(pred_proba.flatten())
+            y_pred.append(torch.round(pred_proba.flatten()))
+            y_true.append(y)
+    y_pred = torch.cat(y_pred, dim=0)
+    y_pred_proba = torch.cat(y_pred_proba, dim=0)
+    y_true = torch.cat(y_true, dim=0)
+    return compute_metrics(y_pred, y_pred_proba, y_true)
+
+def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
     """
-    Perform boostrap training and testing and return classification metrics as dict
+    Perform bootstrap training and testing and return classification metrics as dict
 
-    args
-        X_ (internal, external) (numpy.ndarray) data input of shape (n_samples, n_features)
-        Y_ (internal, external) (numpy.ndarray) data expected output of shape (n_samples)
-        normalization (str) method for normalizing input data
-        bootstrap (int) number of time to eprform the training with random splitting, if None apply k-fold
-        feature_selection (str) feature selection method to apply (see sklearn)
-        feature_reduction_N (int) number of dimension to reduce data into using PCA
+    Args:
+        exp_params (dict) experiment parameters
+        data_loader (DataLoader) data loader
+        device (torch.device) device for model
+        bootstrap (int) number of bootstraps
     """
 
-    def compute_metrics(y_pred, y_pred_proba, y):
-        tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
-        m = {"acc": accuracy_score(y, y_pred),
-             "auc": roc_auc_score(y, y_pred),
-             "balanced_accuracy": balanced_accuracy_score(y, y_pred),
-             "f1_score": f1_score(y, y_pred, zero_division=0),
-             "specificity": zero_division(tn, (tn + fp)),
-             "sensitivity": zero_division(tp, (tp + fn)),
-             "log_loss": log_loss(y, y_pred_proba)}
-        return m
+    metrics = {}
+    best_state_dict = {}
+    for i in range(bootstrap):
+        print(f"bootstrap {i+1}/{bootstrap}")
 
-    print("Y internal stat:")
-    print(display_split_stats(Y_internal))
-    print("Y external stat:")
-    print(display_split_stats(Y_external))
+        # split into train and test based on centers
+        X_train, Y_train, X_valid, Y_valid, X_test, Y_test = data_loader.split(INTERNAL_CENTERS, EXTERNAL_CENTERS)
+        train_loader = DataLoader(X=X_train, Y=Y_train)
+        valid_loader = DataLoader(X=X_valid, Y=Y_valid)
+        test_loader = DataLoader(X=X_test, Y=Y_test)
 
-    if not bootstrap:
-        bootstrap = 1
+        print("training data stat:")
+        print(display_split_stats(train_loader))
+        print("validation data stat:")
+        print(display_split_stats(valid_loader))
+        print("testing data stat:")
+        print(display_split_stats(test_loader))
 
-    metrics = []
-    for i in tqdm.trange(bootstrap):
-        if unique_labels(Y_internal).size == 1 or unique_labels(Y_external).size == 1:
-            print("WARNING: skipping bootstrap step due to unique label in y_train or y_test")
-            continue
+        match exp_params["classifier"]:
+            case "attention":
+                model = Attention(**exp_params)
+            case "linear":
+                n_dim = list(chain.from_iterable([v.values() for v in exp_params["dims"].values()]))[0]
+                model = Linear(n_dim, exp_params["n_class"])
+            case "concat":
+                model = Concat(**exp_params)
+            case _:
+                raise ValueError(f"experiment parameter classifier type not recognized: {exp_params['classifier']}")
 
-        # normalize features separatly (to avoid data leakage)
-        if normalization == "minmax":
-            X_internal = minmax_scale(X_internal, axis=0)
-            X_external = minmax_scale(X_external, axis=0)
+        # define optimizer
+        if exp_params["optimizer"] == "adam":
+            opt = torch.optim.Adam(model.parameters(), lr=exp_params["lr"], weight_decay=0.1)
         else:
-            X_internal = scale(X_internal, axis=0)
-            X_external = scale(X_external, axis=0)
+            opt = torch.optim.SGD(model.parameters(), lr=exp_params["lr"], weight_decay=0.1)
 
-        if feature_selection:
-            raise NotImplementedError() #TODO
-
-        if feature_reduction_N:
-            if 0 < feature_reduction_N and feature_reduction_N < min(X_internal.shape):
-                reduc = PCA(n_components=feature_reduction_N, random_state=0)
-                reduc.fit(X_internal)
-                X_internal = reduc.transform(X_internal)
-                X_external = reduc.transform(X_external)
-            else:
-                # print(f"input cannot be transformed {X_internal.shape[1]} to {feature_reduction_N} dimensions since final dimension must be between 1 and min(n_samples, n_features)={min(X_internal.shape)}")
-                pass
-
-        try:
-            clf = LogisticRegression(verbose=0)
-            clf.fit(X_internal, Y_internal)
-
-            y_pred_internal = clf.predict(X_internal)
-            y_pred_proba_internal = clf.predict_proba(X_internal)
-
-            y_pred_external = clf.predict(X_external)
-            y_pred_proba_external = clf.predict_proba(X_external)
-
-            internal_metrics = compute_metrics(y_pred_internal, y_pred_proba_internal, Y_internal)
-            external_metrics = compute_metrics(y_pred_external, y_pred_proba_external, Y_external)
-            metrics.append((internal_metrics, external_metrics))
-        except ValueError:
-            print("ValueError occured during model training or test")
-            continue
-
-    return metrics
-
-
-def run_experiment(internal_data, external_data, internal_features, external_features, exps, exp_code_, output):
-    """
-    args
-        #TODO
-    """
-
-    def safe_convert_float(i, point_float_pattern=r"-?\d+\.\d+|-?\d+"):
-        try:
-            return float(re.findall(point_float_pattern, i)[0])
-        except IndexError:
-            return None
+        # send model to device
+        model.to(device)
         
-    combined_path = "./dataset.csv"
-    build_dataset(internal_data, external_data, internal_features, external_features, combined_path)
-    df = pandas.read_csv(combined_path)
-    df["patient"] = df["patient"].astype("str")
-
-    print("filtering patients...")
-
-    # filter patients without xerostomia label
-    subdf = df[df["name"] == "xerostomia"]
-    subdf = subdf[pandas.isna(subdf["value"])]
-    df = df[~df["patient"].isin(subdf["patient"].unique())]
-    print("number of patients remaning: ", len(df["patient"].unique()))
-
-    for i, exp_params in enumerate(exps):
-        print(f"running experiment {i+1}/{len(exps)}")
-
-        # create experience name
-        exp_name = f"{exp_code_}_{str(i+1)}"
-
-        # select data containing OARs; clinical features must be added because they would be lost after that
-        # features filtering comes after
-        if not isinstance(exp_params["oars"], (list, tuple)):
-            exp_params["oars"] = [exp_params["oars"]]
-        exp_df = df[(df["oar"].isin(exp_params["oars"])) | (df["features"] == "clinical")]
-
-        # remove xerostomia information (target to predict)
-        exp_df = exp_df.drop(exp_df[exp_df["name"] == "xerostomia"].index)
-
-        # select features
-        for fts, names in exp_params["features"].items():
-            if names == -1:
-                # keep all features belong to this type
-                continue
-            elif isinstance(names, list):
-                    exp_df = exp_df.drop(exp_df[(exp_df["features"] == fts) & (~exp_df["name"].isin(names))].index)
-            else:
-                raise TypeError()
-
-        # build X (input)
-        X = exp_df.copy(deep=True)
-        X['features'] = X[['features', 'name']].agg('_'.join, axis=1)
-        X = X[["patient", "features", "oar", "value", "cohort"]]
-
-        # tranform values to float (handle nan)
-        # merge OARs features
-        X["value"] = X["value"].apply(safe_convert_float).astype("float32")
-        square_mean = lambda x: np.sqrt(np.square(x).sum())
-        X = X.groupby(["patient", "features", "cohort"], as_index=False)["value"].apply(square_mean)
-
-        # separate data into cohorts
-        X_internal = X[X["cohort"] == "internal"]
-        X_external = X[X["cohort"] == "external"]
-
-        # reshape dataframe and drop patients with nan values
-        # TODO features completion
-        X_internal = X_internal.pivot(index="patient", columns="features", values="value").dropna(axis="index")
-        X_external = X_external.pivot(index="patient", columns="features", values="value").dropna(axis="index")
-
-        # build Y
-        # this must be done on original DataFrame because toxicity value is filtered in exp dataframe
-        Y_internal = df[df["name"] == "xerostomia"].pivot(index="patient", columns="name", values="value").loc[X_internal.index.values, "xerostomia"]
-        Y_external = df[df["name"] == "xerostomia"].pivot(index="patient", columns="name", values="value").loc[X_external.index.values, "xerostomia"]
-
-        # convert to numpy arrays
-        X_internal = np.array(X_internal)
-        X_external = np.array(X_external, dtype=np.float32)
-        Y_internal = np.array(Y_internal, dtype=np.float16).astype(dtype=np.int16)
-        Y_external = np.array(Y_external, dtype=np.float16).astype(dtype=np.int16)
-
-        print("X internal shape: ", X_internal.shape)
-        print("Y internal shape: ", Y_internal.shape)
-        print()
-        print("X external shape: ", X_external.shape)
-        print("Y external shape: ", Y_external.shape)
-
-        # fit model
-        print("fitting model")
-        metrics = cross_validation(X_internal, Y_internal, X_external, Y_external, 
-                                   normalization=exp_params["normalization"], bootstrap=exp_params["bootstrap"], 
-                                   feature_reduction_N=exp_params["feature_reduction_N"])
+        # train/test loop
+        bootstrap_metrics = {"train": [], "valid": [], "test": []}
+        for n_iter in tqdm.trange(exp_params["n_iter"], ncols=100):
+            # eval iteration (on both train and test data)
+            if (n_iter + 1) % exp_params["eval_iter"] == 0:
+                model.eval()
+                for split, loader in [("train", train_loader), ("valid", valid_loader), ("test", test_loader)]:
+                    m = eval(model, loader, exp_params["bsize"], device)
+                    bootstrap_metrics[split].append(m)
+                
+                validation_loss = [i["log_loss"] for i in bootstrap_metrics["valid"]]
+                if validation_loss[-1] == min(validation_loss):
+                    best_state_dict.update({i: model.state_dict()})
+            
+            # train iteration
+            model.train()   # set to train mode
+            x, y = train_loader.get_random_batch(exp_params["bsize"])
+            pred = model(send_to_device(x, device))
+            y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
+            opt.zero_grad()
+            loss = F.binary_cross_entropy(F.sigmoid(pred), y)
+            loss.backward()
+            opt.step()
         
-        internal_metrics, external_metrics = zip(*metrics)
+        metrics.update({i: bootstrap_metrics})    
+    return metrics, best_state_dict
 
-        # save results
-        out_dir = os.path.join(output, exp_code_, exp_name)
-        os.makedirs(out_dir, exist_ok=True)
-        pandas.DataFrame(internal_metrics).to_csv(os.path.join(out_dir, "internal_metrics.csv"))
-        pandas.DataFrame(external_metrics).to_csv(os.path.join(out_dir, "external_metrics.csv"))
 
-        # save exp params
-        with open(os.path.join(out_dir, "params.json"), "w") as f:
-            json.dump(exp_params, f)
+INTERNAL_CENTERS = ["CHUM", "CHUP", "CHUS", "HGJ", "HMR", "MDA", "USZ", "UHN"]
+EXTERNAL_CENTERS = ["CEM", "UIHC"]
 
-def list_radiomics(type_):
-    features = getFeatureClasses()[type_].getFeatureNames().keys()
-    return [f"original_{type_}_{i}" for i in features]
+DIMS = {
+    "image": {"ct-fm": 512, "suprem": 128, "vista3d": 768}, 
+    "clinical": {"llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb": 768, "llm-BioLORD-2023-M": 768, "llm-embeddinggemma-300m-medical": 768},
+    }
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--internal_data', type=str, required=True, help='path to internal data pickle file')
-    parser.add_argument('--external_data', type=str, required=True, help='path to external data pickle file')
-    parser.add_argument('--internal_features', type=str, required=True, help='path to internal data features (csv)')
-    parser.add_argument('--external_features', type=str, required=True, help='path to external data features (csv)')
+    parser.add_argument('--task', type=str, required=True, choices=[recurrence_2y_name, recurrence_5y_name], help="task to train model on")
     parser.add_argument('--output', type=str, required=True, help='path to save results')
-    parser.add_argument('--exp_yaml', type=str, required=True, help='path to yaml file containing experiment parameters')
-    parser.add_argument('--feature_reduction_N', type=int, default=10, help='number of dimensions to reduce feature vector')
-    parser.add_argument('--bootstrap', type=int, default=100, help='number of bootstraps')
-    parser.add_argument('--normalization', type=str, default="minmax", help='normalization method to apply to features')
+    parser.add_argument('--bootstrap', type=int, default=1, help='number of bootstraps')
+    parser.add_argument('--extractors', type=str, required=True, help="extractors separated by comma (e.g., 'ct-fm,suprem')")
+    parser.add_argument('--classifier', type=str, required=True, choices=["attention", "concat", "linear"], help="classifier type")
+    parser.add_argument('--n_dim', type=int, default=128, help="dimension after features fusion/concatenation")
+    parser.add_argument('--n_layer', type=int, default=1, help="number of layers in attention fusion")
+    parser.add_argument('--lambda_', type=float, default=0.5, help="lambda parameter for attention trade-off")
+    parser.add_argument('--normalizer', type=str, default="scale", help="normalizer to pre-process data before training model")
+    parser.add_argument('--pca', type=int, default=None, help="dimension after applying PCA, set to None to not apply")
+    parser.add_argument('--n_class', type=int, default=1, help="number of classes of task")
+    parser.add_argument('--optimizer', type=str, default="adam")
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--bsize', type=int, default=1)
+    parser.add_argument('--n_iter', type=int, default=1000, help="number of training iterations")
+    parser.add_argument('--eval_iter', type=int, default=10, help="number of training iterations between evaluations")
+    parser.add_argument('--gpu', type=str, default="", help='GPUs to use')
     args = parser.parse_args()
     
-    list_of_oars = [("parotid_gland_left", "parotid_gland_right"), 
-                    ("submandibular_gland_right", "submandibular_gland_left"), 
-                    ("mandible")]
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
+    device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+    print(device)
+
+    out_path = pathlib.Path(args.output).joinpath(coolname.generate_slug())
+    out_path.mkdir(parents=True, exist_ok=True)
     
-    with open(args.exp_yaml, 'r') as file:
-        features = yaml.safe_load(file)
+    # experiment parameters
+    exp_params = vars(args)
+    extractors = args.extractors.split(",")
+    exp_params.update({"dims": {m: {k: v for k,v in DIMS[m].items() if k in extractors} for m in DIMS.keys()}})
+    
+    # construct data loader
+    data_loader = DataLoader(base_path="./")
 
-    exp_code = str(features["code"]).zfill(3)
-    features = features["experiments"]
+    # data processing
+    print("loading cohorts...")
+    data_loader.build_dataset()
+    print("preparing data...")
+    data_loader.prepare_data(exp_params, args.task)
+    print("normalizing features values..")
+    data_loader.normalize(args.normalizer)
 
-    exps = []
-    for oars in list_of_oars:
-        for fts in features:
-            exp_params = dict(oars=oars, features=fts, feature_reduction_N=args.feature_reduction_N, 
-                              bootstrap=args.bootstrap, normalization=args.normalization)
-            exps.append(exp_params)
-    run_experiment(args.internal_data, args.external_data, args.internal_features, args.external_features, exps, exp_code, output=args.output)
+    # fit model
+    print("fitting model")
+    metrics, best_state_dict = cross_validation(exp_params, data_loader, device, args.bootstrap)
+    
+    # save results
+    pandas.DataFrame(metrics).to_csv(out_path.joinpath("metrics.csv"))
+
+    # save best model state dicts
+    for i, state_dict in best_state_dict.items():
+        torch.save(state_dict, out_path.joinpath(f"best_checkpoint_{i}.pt"))
+
+    # save exp params
+    with open(out_path.joinpath("params.json"), "w") as f:
+        json.dump(exp_params, f)
+
     print("done.")

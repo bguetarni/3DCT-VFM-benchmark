@@ -1,8 +1,10 @@
-import os, argparse, pickle, logging
+import os
+import argparse
+import pickle
+import logging
 import datetime
 from dataloader import cohorts_map
 from dataloader import *
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

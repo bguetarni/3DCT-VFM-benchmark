@@ -1,4 +1,5 @@
-import os, pathlib
+import os
+import pathlib
 import numpy as np
 from scipy.ndimage import binary_fill_holes
 from skimage.draw import polygon

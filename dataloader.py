@@ -1,8 +1,14 @@
 from abc import ABC, abstractmethod
-import glob, os, tqdm, pathlib, re, pickle
+import glob
+import os
+import tqdm
+import pathlib
+import re
+import pickle
 import pydicom
 import pandas
 import datetime
+from monai.transforms import Flip, SpatialCrop
 
 import dicom_class
 import dicom_utils
@@ -17,13 +23,6 @@ def convert2date(dt):
 class BaseLoader(ABC):
     def __init__(self, path):
         self.path = path
-
-    # @abstractmethod
-    # def load_clinical(self):
-    #     """
-    #     age, sex, ecog, cancer stage, xerostomia, hpv, lrr, rfs (days), os (days)
-    #     """
-    #     pass 
 
     def load(self, logger):
         data = self.build_patients(logger)
@@ -209,7 +208,7 @@ class ARTIX(BaseLoader):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "artix.pickle"), "rb") as f:
             patients = pickle.load(f)
@@ -218,9 +217,9 @@ class ARTIX(BaseLoader):
         features = []
         for file_ in base_path.joinpath("features", "artix").iterdir():
             fts = pandas.read_csv(file_)
-            fts["center"] = "CEM"   # Centre Eugene Marquis
             fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.name
+            fts["features"] = file_.stem
+            fts["patient"] = fts["patient"].apply(lambda i: str(i).zfill(3))
             features.append(fts)        
         features = pandas.concat(features)
 
@@ -252,11 +251,18 @@ class ARTIX(BaseLoader):
                 r5y = 1 if endfollow_endrt_days > 5*365 else None
             else:
                 pass
-
-            label.append({"patient": id_, "center": "CEM", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            
+            label.append({"patient": id_, 
+                          "center": "CEM", # Centre Eugene Marquis
+                          recurrence_2y_name: r2y,
+                          recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
 
         return features, label
+
+    def get_spatial_transforms():
+        tr = [SpatialCrop(roi_start=(0,0,0), roi_end=(1000,1000,400)),]
+        return tr
 
 
 class HECKTOR(BaseLoader):
@@ -350,20 +356,17 @@ class HECKTOR(BaseLoader):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "hecktor.pickle"), "rb") as f:
             patients = pickle.load(f)
-
-        centerid = pandas.DataFrame([{"patient": p.clinical['PatientID'], "center": p.clinical['CenterID']} for p in patients.values()])
 
         # concatenate features and modalities
         features = []
         for file_ in base_path.joinpath("features", "hecktor").iterdir():
             fts = pandas.read_csv(file_)
-            fts = pandas.merge(fts, centerid, how="outer", on="patient")   # add center IDs
             fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.name
+            fts["features"] = file_.stem
             features.append(fts)        
         features = pandas.concat(features)
 
@@ -382,6 +385,9 @@ class HECKTOR(BaseLoader):
 
         return features, label
 
+    def get_spatial_transforms():
+        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,100,0), roi_end=(500,500,300)),]
+        return tr
 
 class TCIA(BaseLoader):
     def __init__(self, path):
@@ -482,7 +488,7 @@ class HeadNeckCTAtlas(TCIA):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "headneckctatlas.pickle"), "rb") as f:
             patients = pickle.load(f)
@@ -491,9 +497,8 @@ class HeadNeckCTAtlas(TCIA):
         features = []
         for file_ in base_path.joinpath("features", "headneckctatlas").iterdir():
             fts = pandas.read_csv(file_)
-            fts["center"] = "MDA"
             fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.name
+            fts["features"] = file_.stem
             features.append(fts)        
         features = pandas.concat(features)
 
@@ -511,6 +516,9 @@ class HeadNeckCTAtlas(TCIA):
         label = pandas.DataFrame(label)
         return features, label
 
+    def get_spatial_transforms():
+        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,50,0), roi_end=(512,512,350)),]
+        return tr
 
 class HeadNeckPETCT(TCIA):
     def __init__(self, path):
@@ -551,20 +559,17 @@ class HeadNeckPETCT(TCIA):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "headneckpetct.pickle"), "rb") as f:
             patients = pickle.load(f)
-
-        centerid = pandas.DataFrame([{"patient": p.clinical['Patient #'], "center": p.clinical['center']} for p in patients.values()])
 
         # concatenate features and modalities
         features = []
         for file_ in base_path.joinpath("features", "headneckpetct").iterdir():
             fts = pandas.read_csv(file_)
-            fts = pandas.merge(fts, centerid, how="outer", on="patient")   # add center IDs
             fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.name
+            fts["features"] = file_.stem
             features.append(fts)        
         features = pandas.concat(features)
 
@@ -598,6 +603,9 @@ class HeadNeckPETCT(TCIA):
         label = pandas.DataFrame(label)
         return features, label
 
+    def get_spatial_transforms():
+        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,100,0), roi_end=(512,512,350)),]
+        return tr
 
 class HNSCC3DCTRT(TCIA):
     def __init__(self, path):
@@ -665,7 +673,7 @@ class OropharyngealRadiomicsOutcomes(TCIA):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "oropharyngealradiomicsoutcomes.pickle"), "rb") as f:
             patients = pickle.load(f)
@@ -674,9 +682,8 @@ class OropharyngealRadiomicsOutcomes(TCIA):
         features = []
         for file_ in base_path.joinpath("features", "oropharyngealradiomicsoutcomes").iterdir():
             fts = pandas.read_csv(file_)
-            fts["center"] = "MDA"
             fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.name
+            fts["features"] = file_.stem
             features.append(fts)        
         features = pandas.concat(features)
 
@@ -709,6 +716,9 @@ class OropharyngealRadiomicsOutcomes(TCIA):
         label = pandas.DataFrame(label)
         return features, label
 
+    def get_spatial_transforms():
+        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]
+        return tr
 
 class QINHEADNECK(TCIA):
     def __init__(self, path):
@@ -754,7 +764,7 @@ class QINHEADNECK(TCIA):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "qinheadneck.pickle"), "rb") as f:
             patients = pickle.load(f)
@@ -763,9 +773,8 @@ class QINHEADNECK(TCIA):
         features = []
         for file_ in base_path.joinpath("features", "qinheadneck").iterdir():
             fts = pandas.read_csv(file_)
-            fts["center"] = "UIHC"   # University of Iowa Hospital and Clinics
             fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.name
+            fts["features"] = file_.stem
             features.append(fts)        
         features = pandas.concat(features)
 
@@ -794,10 +803,16 @@ class QINHEADNECK(TCIA):
                 r2y = None
                 r5y = None
 
-            label.append({"patient": id_, "center": "UIHC", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, 
+                          "center": "UIHC", # University of Iowa Hospital and Clinics
+                          recurrence_2y_name: r2y, 
+                          recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
         return features, label
 
+    def get_spatial_transforms():
+        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]
+        return tr
 
 class RADCURE(TCIA):
     def __init__(self, path):
@@ -837,7 +852,7 @@ class RADCURE(TCIA):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("./") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "radcure.pickle"), "rb") as f:
             patients = pickle.load(f)
@@ -846,9 +861,8 @@ class RADCURE(TCIA):
         features = []
         for file_ in base_path.joinpath("features", "radcure").iterdir():
             fts = pandas.read_csv(file_)
-            fts["center"] = "UHN"   # University Health Network
             fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.name
+            fts["features"] = file_.stem
             features.append(fts)        
         features = pandas.concat(features)
 
@@ -877,10 +891,16 @@ class RADCURE(TCIA):
                 r2y = None
                 r5y = None
 
-            label.append({"patient": id_, "center": "UHN", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            label.append({"patient": id_, 
+                          "center": "UHN", # University Health Network
+                          recurrence_2y_name: r2y, 
+                          recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
         return features, label
 
+    def get_spatial_transforms():
+        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]
+        return tr
 
 cohorts_map = {
     "artix": ARTIX,
