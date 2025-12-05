@@ -319,6 +319,7 @@ class HECKTOR(BaseLoader):
 
             df = pandas.read_csv(os.path.join(self.path, "Task 3", "HECKTOR_2025_Training_Task_3.csv"))
             clinical = df[df["PatientID"] == str(id)].to_dict(orient="records")[0]
+            clinical["CenterID"] = self.center_map[clinical["CenterID"]]
 
             if id in data.keys():
                 if not(data[id].ct) and ct:
@@ -380,7 +381,9 @@ class HECKTOR(BaseLoader):
             except KeyError:
                 r2y, r5y = None, None
 
-            label.append({"patient": id_, "center": p.clinical["CenterID"], recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+            center = p.clinical["CenterID"]
+            center = self.center_map[center] if center in self.center_map.keys() else center
+            label.append({"patient": id_, "center": center, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
         label = pandas.DataFrame(label)
 
         return features, label

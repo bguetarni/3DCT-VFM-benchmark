@@ -14,7 +14,7 @@ import coolname
 
 from dataloader import ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, QINHEADNECK, OropharyngealRadiomicsOutcomes, RADCURE
 from dataloader import recurrence_2y_name, recurrence_5y_name
-from classifiers.classifiers import Attention, Linear, Concat
+from classifiers.classifiers import Attention, Linear, Concat, Normalizer
 
 
 class DataLoader:
@@ -117,20 +117,13 @@ class DataLoader:
             yield x, y
         return StopIteration
 
-    def normalize(self, method="scale"):
-        match method:
-            case "scale":
-                fn = sklearn.preprocessing.scale
-            case "mnimax":
-                fn = sklearn.preprocessing.minmax_scale
-            case "unit":
-                fn = sklearn.preprocessing.normalize
-            case _:
-                fn = sklearn.preprocessing.scale
-        
-        # apply normalization function column-wise
-        for c in self.X.columns:
-            self.X[c] = fn(self.X[c])
+    def split_per_center(self):
+        dataloader = []
+        for center in self.Y["center"].unique():
+            y = self.Y.loc[self.Y["center"].isin(center).index]
+            x = self.X.loc[y.index]
+            dataloader.append((center, DataLoader(self.base_path, x, y, self.uniform_sampling)))
+        return dataloader
 
 
 def zero_division(num, den):
@@ -167,24 +160,30 @@ def compute_metrics(y_pred, y_pred_proba, y):
             "log_loss": log_loss(y, y_pred_proba)}
     return m
 
-def eval(model, loader, batch_size, device):
-    y_pred_proba = []
-    y_pred = []
-    y_true = []
-    for batch in loader.batch_iterator(batch_size):
-        if batch == StopIteration:
-            break
-        x, y = batch
-        with torch.no_grad():
-            pred_proba = model(send_to_device(x, device)).to("cpu")
-            pred_proba = F.sigmoid(pred_proba)
-            y_pred_proba.append(pred_proba.flatten())
-            y_pred.append(torch.round(pred_proba.flatten()))
-            y_true.append(y)
-    y_pred = torch.cat(y_pred, dim=0)
-    y_pred_proba = torch.cat(y_pred_proba, dim=0)
-    y_true = torch.cat(y_true, dim=0)
-    return compute_metrics(y_pred, y_pred_proba, y_true)
+def eval(model, loader, batch_size, device, per_center=False):
+    if per_center:
+        metrics = {}
+        for center, center_loader in loader.split_per_center():
+            metrics.update({center: eval(model, center_loader, batch_size, device)})
+        return metrics
+    else:
+        y_pred_proba = []
+        y_pred = []
+        y_true = []
+        for batch in loader.batch_iterator(batch_size):
+            if batch == StopIteration:
+                break
+            x, y = batch
+            with torch.no_grad():
+                pred_proba = model(send_to_device(x, device)).to("cpu")
+                pred_proba = F.sigmoid(pred_proba)
+                y_pred_proba.append(pred_proba.flatten())
+                y_pred.append(torch.round(pred_proba.flatten()))
+                y_true.append(y)
+        y_pred = torch.cat(y_pred, dim=0)
+        y_pred_proba = torch.cat(y_pred_proba, dim=0)
+        y_true = torch.cat(y_true, dim=0)
+        return compute_metrics(y_pred, y_pred_proba, y_true)
 
 def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
     """
@@ -197,14 +196,25 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
         bootstrap (int) number of bootstraps
     """
 
-    metrics = {}
+    train_metrics = []
+    test_metrics = []
     best_state_dict = {}
-    for i in range(bootstrap):
-        print(f"bootstrap {i+1}/{bootstrap}")
+    normalizer = {}
+    for b in range(bootstrap):
+        print(f"bootstrap {b+1}/{bootstrap}")
 
         # split into train and test based on centers
         X_train, Y_train, X_valid, Y_valid, X_test, Y_test = data_loader.split(INTERNAL_CENTERS, EXTERNAL_CENTERS)
-        train_loader = DataLoader(X=X_train, Y=Y_train)
+
+        # apply normalization function column-wise
+        print("normalizing features values..")
+        norm = Normalizer(args.normalizer)
+        X_train = norm.fit_transform(X_train)
+        X_valid = norm.transform(X_valid)
+        X_test = norm.transform(X_test)
+        normalizer.update({i: norm.get_params()})
+
+        train_loader = DataLoader(X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"])
         valid_loader = DataLoader(X=X_valid, Y=Y_valid)
         test_loader = DataLoader(X=X_test, Y=Y_test)
 
@@ -220,11 +230,13 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
                 model = Attention(**exp_params)
             case "linear":
                 n_dim = list(chain.from_iterable([v.values() for v in exp_params["dims"].values()]))[0]
-                model = Linear(n_dim, exp_params["n_class"])
+                model = Linear(n_dim, n_class=1)
             case "concat":
                 model = Concat(**exp_params)
             case _:
                 raise ValueError(f"experiment parameter classifier type not recognized: {exp_params['classifier']}")
+            
+        print(f"model size: {model.get_num_params():,d}")
 
         # define optimizer
         if exp_params["optimizer"] == "adam":
@@ -236,18 +248,29 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
         model.to(device)
         
         # train/test loop
-        bootstrap_metrics = {"train": [], "valid": [], "test": []}
         for n_iter in tqdm.trange(exp_params["n_iter"], ncols=100):
             # eval iteration (on both train and test data)
             if (n_iter + 1) % exp_params["eval_iter"] == 0:
                 model.eval()
-                for split, loader in [("train", train_loader), ("valid", valid_loader), ("test", test_loader)]:
-                    m = eval(model, loader, exp_params["bsize"], device)
-                    bootstrap_metrics[split].append(m)
+
+                # train/val
+                for split, loader in [("train", train_loader), ("valid", valid_loader)]:
+                    metrics = eval(model, loader, exp_params["bsize"], device)
+                    for m, v in metrics.items():
+                        train_metrics.append({"split": split, "metric": m, "value": v, "bootstrap": b, "step": n_iter})
                 
-                validation_loss = [i["log_loss"] for i in bootstrap_metrics["valid"]]
+                # test
+                metrics = eval(model, test_loader, exp_params["bsize"], device, per_center=True)
+                for center, ms in metrics:
+                    for m, v in ms.items():
+                        test_metrics.append({"center": center, "split": "test", "metric": m, "value": v, "bootstrap": b, "step": n_iter})
+
+                # save checkpoint if current validation loss is lowest
+                validation_loss = pandas.DataFrame(train_metrics)
+                validation_loss = validation_loss[(validation_loss["metric"] == "log_loss") & (validation_loss["split"] == "valid") & (validation_loss["bootstrap"] == "b")]
+                validation_loss = validation_loss["value"].values
                 if validation_loss[-1] == min(validation_loss):
-                    best_state_dict.update({i: model.state_dict()})
+                    best_state_dict.update({b: model.state_dict()})
             
             # train iteration
             model.train()   # set to train mode
@@ -259,8 +282,7 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
             loss.backward()
             opt.step()
         
-        metrics.update({i: bootstrap_metrics})    
-    return metrics, best_state_dict
+    return metrics, best_state_dict, normalizer
 
 
 INTERNAL_CENTERS = ["CHUM", "CHUP", "CHUS", "HGJ", "HMR", "MDA", "USZ", "UHN"]
@@ -283,12 +305,12 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_', type=float, default=0.5, help="lambda parameter for attention trade-off")
     parser.add_argument('--normalizer', type=str, default="scale", help="normalizer to pre-process data before training model")
     parser.add_argument('--pca', type=int, default=None, help="dimension after applying PCA, set to None to not apply")
-    parser.add_argument('--n_class', type=int, default=1, help="number of classes of task")
     parser.add_argument('--optimizer', type=str, default="adam")
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--bsize', type=int, default=1)
     parser.add_argument('--n_iter', type=int, default=1000, help="number of training iterations")
     parser.add_argument('--eval_iter', type=int, default=10, help="number of training iterations between evaluations")
+    parser.add_argument('--uniform_sampling', action='store_true', help="sample uniformly across centers for training")
     parser.add_argument('--gpu', type=str, default="", help='GPUs to use')
     args = parser.parse_args()
     
@@ -312,12 +334,10 @@ if __name__ == "__main__":
     data_loader.build_dataset()
     print("preparing data...")
     data_loader.prepare_data(exp_params, args.task)
-    print("normalizing features values..")
-    data_loader.normalize(args.normalizer)
 
     # fit model
     print("fitting model")
-    metrics, best_state_dict = cross_validation(exp_params, data_loader, device, args.bootstrap)
+    metrics, best_state_dict, normalizer = cross_validation(exp_params, data_loader, device, args.bootstrap)
     
     # save results
     pandas.DataFrame(metrics).to_csv(out_path.joinpath("metrics.csv"))
@@ -325,6 +345,11 @@ if __name__ == "__main__":
     # save best model state dicts
     for i, state_dict in best_state_dict.items():
         torch.save(state_dict, out_path.joinpath(f"best_checkpoint_{i}.pt"))
+
+    # save normalizers
+    for i, norm in normalizer.items():
+        with open(out_path.joinpath(f"normalizer_{i}.json"), "w") as f:
+            json.dump(norm, f)
 
     # save exp params
     with open(out_path.joinpath("params.json"), "w") as f:

@@ -3,9 +3,39 @@ from itertools import chain
 import torch
 from torch import nn
 import torch.nn.functional as F
+import sklearn
 # from sklearn.decomposition import PCA
-# from sklearn.preprocessing import StandardScaler
 # from sklearn.linear_model import LogisticRegression
+
+class Normalizer:
+    def __init__(self, method=None):
+        match method:
+            case "scale":
+                self.normalizer = sklearn.preprocessing.StandardScaler()
+            case "mnimax":
+                self.normalizer = sklearn.preprocessing.MinMaxScaler(feature_range=(0,1))
+            case "unit":
+                self.normalizer = sklearn.preprocessing.Normalizer()
+            case _:
+                self.normalizer = sklearn.preprocessing.StandardScaler()
+    
+    def fit_transform(self, X):
+        new_x = self.normalizer.fit_transform(X.values)
+        for i, c in enumerate(X.columns):
+            X[c] = new_x[:,i]
+        return X
+
+    def transform(self, X):
+        new_x = self.normalizer.transform(X.values)
+        for i, c in enumerate(X.columns):
+            X[c] = new_x[:,i]
+        return X
+    
+    def get_params(self):
+        return self.normalizer.__getstate__()
+
+    def set_params(self, params):
+        self.normalizer.__setstate__(params)
 
 class BaseClassifier(ABC):
     def __init__(self):
@@ -23,8 +53,12 @@ class BaseClassifier(ABC):
     def load(self, path_):
         pass
 
+    @abstractmethod
+    def get_num_params(self):
+        pass
+
 class Attention(nn.Module, BaseClassifier):
-    def __init__(self, dims, n_dim, n_layer, n_class, lambda_, dropout=0.1, **args):
+    def __init__(self, dims, n_dim, n_layer, lambda_, dropout=0.1, n_class=1, **args):
         """"
         Args
             dims (dict) dict of dimension for each modality and features ({"m": {"f1": n1, "f2": n2}, ...}})
@@ -121,7 +155,7 @@ class Attention(nn.Module, BaseClassifier):
     
 
 class Concat(nn.Module, BaseClassifier):
-    def __init__(self, dims, n_dim, n_class, dropout=0.1, **args):
+    def __init__(self, dims, n_dim, dropout=0.1, n_class=1, **args):
         """"
         Args
             dims (dict) dict of dimension for each modality and features ({"m": {"f1": n1, "f2": n2}, ...}})
@@ -139,6 +173,10 @@ class Concat(nn.Module, BaseClassifier):
     def load(self, path_):
         self.load_state_dict(torch.load(path_))
 
+    def get_num_params(self):
+        get_n = lambda i: sum(p.numel() for p in i.parameters() if p.requires_grad)
+        return get_n(self.proj) + get_n(self.head)
+
     def forward(self, x):
         """
         Args
@@ -153,7 +191,7 @@ class Concat(nn.Module, BaseClassifier):
 
 
 class Linear(nn.Module, BaseClassifier):
-    def __init__(self, n_dim, n_class, dropout=0.1, **args):
+    def __init__(self, n_dim, dropout=0.1, n_class=1, **args):
         """"
         Args
             n_dim (int) dimension of features
@@ -167,6 +205,10 @@ class Linear(nn.Module, BaseClassifier):
 
     def load(self, path_):
         self.load_state_dict(torch.load(path_))
+
+    def get_num_params(self):
+        get_n = lambda i: sum(p.numel() for p in i.parameters() if p.requires_grad)
+        return get_n(self.head)
 
     def forward(self, x):
         """
@@ -184,16 +226,14 @@ class Linear(nn.Module, BaseClassifier):
 
 
 # class LR(BaseClassifier):
-#     def __init__(self, dim, n_class, pca=None, normalizer=True, **args):
+#     def __init__(self, dim, pca=None, normalizer=True, **args):
 #         """
 #         Args
 #             dim (int) input dimension
-#             n_class (int) number of classes
 #             pca (int) dimension to project input using PCA before LR
 #             normalizer (bool) whether to normalize input features before PCA and LR
 #         """
 #         super().__init__()
-#         self.n_class = n_class
 #         self.dim_ = pca if pca else dim
 #         self.pca = PCA(n_components=pca) if pca else None
 #         self.normalizer = StandardScaler() if normalizer else None
@@ -225,12 +265,6 @@ class Linear(nn.Module, BaseClassifier):
 #         self.lr.fit(X, y, sample_weight=sample_weight)
 
 #     def __call__(self, input, get_proba=False):
-#         """
-#         Args
-#             input (array-like) input features (num_samples, dim)
-#         Returns
-#             out (array-like) output logits (num_samples, n_class)
-#         """
 #         X = input
 #         if self.normalizer:
 #             X = self.normalizer.transform(X)
