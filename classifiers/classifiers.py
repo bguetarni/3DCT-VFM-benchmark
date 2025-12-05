@@ -22,13 +22,13 @@ class Normalizer:
     def fit_transform(self, X):
         new_x = self.normalizer.fit_transform(X.values)
         for i, c in enumerate(X.columns):
-            X[c] = new_x[:,i]
+            X.loc[:,c] = new_x[:,i]
         return X
 
     def transform(self, X):
         new_x = self.normalizer.transform(X.values)
         for i, c in enumerate(X.columns):
-            X[c] = new_x[:,i]
+            X.loc[:,c] = new_x[:,i]
         return X
     
     def get_params(self):

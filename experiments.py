@@ -1,4 +1,5 @@
 import json
+import pickle
 import argparse
 import pathlib
 import os
@@ -71,9 +72,9 @@ class DataLoader:
         X_valid = self.X.loc[self.X.index.isin(val_idx)]
         Y_valid = self.Y.loc[X_valid.index]
 
-        X_test = self.X.loc[self.X.index.isin(self.Y["center"].isin(test_centers).index)]
-        Y_test = self.Y.loc[X_test.index]
-
+        Y_test = self.Y[self.Y["center"].isin(test_centers)]
+        X_test = self.X.loc[Y_test.index]
+        
         return X_train, Y_train, X_valid, Y_valid, X_test, Y_test
     
     def shuffle(self):
@@ -87,7 +88,7 @@ class DataLoader:
         """
         if self.uniform_sampling:
             centers = self.Y["center"].unique()
-            n_per_center = np.ceil(n / len(centers))
+            n_per_center = int(np.ceil(n / len(centers)))
             idx = [np.random.choice(self.Y[self.Y["center"] == c].index, size=n_per_center, replace=False) for c in centers]
             idx = list(chain.from_iterable(idx))[:n]
         else:
@@ -120,7 +121,7 @@ class DataLoader:
     def split_per_center(self):
         dataloader = []
         for center in self.Y["center"].unique():
-            y = self.Y.loc[self.Y["center"].isin(center).index]
+            y = self.Y[self.Y["center"] == center]
             x = self.X.loc[y.index]
             dataloader.append((center, DataLoader(self.base_path, x, y, self.uniform_sampling)))
         return dataloader
@@ -212,7 +213,7 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
         X_train = norm.fit_transform(X_train)
         X_valid = norm.transform(X_valid)
         X_test = norm.transform(X_test)
-        normalizer.update({i: norm.get_params()})
+        normalizer.update({b: norm.get_params()})
 
         train_loader = DataLoader(X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"])
         valid_loader = DataLoader(X=X_valid, Y=Y_valid)
@@ -261,13 +262,13 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
                 
                 # test
                 metrics = eval(model, test_loader, exp_params["bsize"], device, per_center=True)
-                for center, ms in metrics:
+                for center, ms in metrics.items():
                     for m, v in ms.items():
                         test_metrics.append({"center": center, "split": "test", "metric": m, "value": v, "bootstrap": b, "step": n_iter})
 
                 # save checkpoint if current validation loss is lowest
                 validation_loss = pandas.DataFrame(train_metrics)
-                validation_loss = validation_loss[(validation_loss["metric"] == "log_loss") & (validation_loss["split"] == "valid") & (validation_loss["bootstrap"] == "b")]
+                validation_loss = validation_loss[(validation_loss["metric"] == "log_loss") & (validation_loss["split"] == "valid") & (validation_loss["bootstrap"] == b)]
                 validation_loss = validation_loss["value"].values
                 if validation_loss[-1] == min(validation_loss):
                     best_state_dict.update({b: model.state_dict()})
@@ -348,8 +349,8 @@ if __name__ == "__main__":
 
     # save normalizers
     for i, norm in normalizer.items():
-        with open(out_path.joinpath(f"normalizer_{i}.json"), "w") as f:
-            json.dump(norm, f)
+        with open(out_path.joinpath(f"normalizer_{i}.pickle"), "wb") as f:
+            pickle.dump(norm, f)
 
     # save exp params
     with open(out_path.joinpath("params.json"), "w") as f:
