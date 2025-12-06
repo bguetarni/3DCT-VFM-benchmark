@@ -129,7 +129,7 @@ class Attention(nn.Module, BaseClassifier):
                 q_mi[m] = torch.matmul(attn_scores, x[m]).squeeze(dim=-2)  # (B, n_dim)
                 
                 # propagate modality query into feature vectors
-                x[m] = self.lambda_ * x[m] + (1 - self.lambda_) * q_mi[m]
+                x[m] = self.lambda_ * x[m] + (1 - self.lambda_) * q_mi[m].unsqueeze(dim=-2).repeat(1, x[m].shape[1], 1)
                 x[m] = self.layers["ln"](self.layers["dropout"](x[m]))   # dropout and layer norm
                 
                 # FFN

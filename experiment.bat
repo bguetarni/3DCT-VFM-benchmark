@@ -12,7 +12,7 @@ set N_ITER=10000
 set EVAL_ITER=100
 
 :: linear classifier
-set BISZE=64
+set BISZE=32
 set LR=1e-3
 set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 0"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors suprem --classifier linear --normalizer scale --lr %LR% --bsize %BISZE%  --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 0"

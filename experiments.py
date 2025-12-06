@@ -283,7 +283,7 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
             loss.backward()
             opt.step()
         
-    return metrics, best_state_dict, normalizer
+    return train_metrics, test_metrics, best_state_dict, normalizer
 
 
 INTERNAL_CENTERS = ["CHUM", "CHUP", "CHUS", "HGJ", "HMR", "MDA", "USZ", "UHN"]
@@ -338,10 +338,11 @@ if __name__ == "__main__":
 
     # fit model
     print("fitting model")
-    metrics, best_state_dict, normalizer = cross_validation(exp_params, data_loader, device, args.bootstrap)
+    train_metrics, test_metrics, best_state_dict, normalizer = cross_validation(exp_params, data_loader, device, args.bootstrap)
     
     # save results
-    pandas.DataFrame(metrics).to_csv(out_path.joinpath("metrics.csv"))
+    pandas.DataFrame(train_metrics).to_csv(out_path.joinpath("train_metrics.csv"))
+    pandas.DataFrame(test_metrics).to_csv(out_path.joinpath("test_metrics.csv"))
 
     # save best model state dicts
     for i, state_dict in best_state_dict.items():
