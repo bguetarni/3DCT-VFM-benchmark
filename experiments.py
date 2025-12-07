@@ -105,7 +105,7 @@ class DataLoader:
         return x, y
     
     def batch_iterator(self, n):
-        for idx in range(0, len(self.Y)-n, n):
+        for idx in range(0, len(self.Y), n):   # handle case where dataset smaller than batch size
             indices = self.Y.index[idx:idx+n]
             x = self.X.loc[indices]
             y = self.Y.loc[indices]
