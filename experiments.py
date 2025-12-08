@@ -60,17 +60,23 @@ class DataLoader:
     def split(self, train_centers, test_centers, train_val_factor=0.8):
         assert set(train_centers).isdisjoint(set(test_centers)), "train and test centers must be disjoint"
 
-        train_idx = list(self.Y["center"].isin(train_centers).index)
-        np.random.shuffle(train_idx)
-        n = int(train_val_factor*len(train_idx))
-        val_idx = train_idx[n:]
-        train_idx = train_idx[:n]
+        if train_val_factor is None:
+            X_train = self.X
+            Y_train = self.Y
+            X_valid = None
+            Y_valid = None
+        else:
+            train_idx = list(self.Y["center"].isin(train_centers).index)
+            np.random.shuffle(train_idx)
+            n = int(train_val_factor*len(train_idx))
+            val_idx = train_idx[n:]
+            train_idx = train_idx[:n]
 
-        X_train = self.X.loc[self.X.index.isin(train_idx)]
-        Y_train = self.Y.loc[X_train.index]
+            X_train = self.X.loc[self.X.index.isin(train_idx)]
+            Y_train = self.Y.loc[X_train.index]
 
-        X_valid = self.X.loc[self.X.index.isin(val_idx)]
-        Y_valid = self.Y.loc[X_valid.index]
+            X_valid = self.X.loc[self.X.index.isin(val_idx)]
+            Y_valid = self.Y.loc[X_valid.index]
 
         Y_test = self.Y[self.Y["center"].isin(test_centers)]
         X_test = self.X.loc[Y_test.index]
