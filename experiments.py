@@ -151,7 +151,20 @@ def send_to_device(x, device):
         return torch.tensor(x).to(device)
 
 def compute_metrics(y_pred, y_pred_proba, y):
-    tn, fp, fn, tp = confusion_matrix(y, y_pred).ravel()
+    cm = confusion_matrix(y, y_pred).ravel()
+
+    # handle case where only one label in y and y_pred
+    # set all confusion matrix element to zero
+    # keeping only the element relative to class present in y
+    if len(cm) == 1:
+        count = cm[0]
+        cm = np.zeros((2,2), dtype=np.int64)
+        i = np.unique(y)
+        j = np.unique(y_pred)
+        cm[i,j] = count
+        cm = cm.ravel()
+
+    tn, fp, fn, tp = cm
     m = {"acc": accuracy_score(y, y_pred),
             "auc": roc_auc_score(y, y_pred),
             "balanced_accuracy": balanced_accuracy_score(y, y_pred),
