@@ -7,7 +7,6 @@ from itertools import chain
 import pandas
 import numpy as np
 import tqdm
-import sklearn
 from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, f1_score, log_loss, confusion_matrix
 import torch
 import torch.nn.functional as F
@@ -110,6 +109,30 @@ class DataLoader:
 
         return x, y
     
+    def get_random_batch_posneg(self, n):
+        if self.uniform_sampling:
+            centers = self.Y["center"].unique()
+            n_per_center = int(np.ceil(n / len(centers)))
+            
+            x_pos_idx = [np.random.choice(self.Y[(self.Y["center"] == c) & (self.Y["label"] == 1)].index, size=n_per_center) for c in centers]
+            x_pos = self.X.loc[list(chain.from_iterable(x_pos_idx))[:n]]
+            
+            x_neg_idx = [np.random.choice(self.Y[(self.Y["center"] == c) & (self.Y["label"] == 0)].index, size=n_per_center) for c in centers]
+            x_neg = self.X.loc[list(chain.from_iterable(x_neg_idx))[:n]]
+        else:
+            x_pos = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 1].index, size=n)]
+            x_neg = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 0].index, size=n)]
+
+        x_pos = {m: {
+                k: torch.tensor(x_pos[(m, k)].values, dtype=torch.float32) for k in x_pos.columns.get_level_values("features")[x_pos.columns.get_level_values("modality") == m].unique()
+            } for m in x_pos.columns.get_level_values("modality").unique()}
+        
+        x_neg = {m: {
+                k: torch.tensor(x_neg[(m, k)].values, dtype=torch.float32) for k in x_neg.columns.get_level_values("features")[x_neg.columns.get_level_values("modality") == m].unique()
+            } for m in x_neg.columns.get_level_values("modality").unique()}
+        
+        return x_pos, x_neg
+    
     def batch_iterator(self, n):
         for idx in range(0, len(self.Y), n):   # handle case where dataset smaller than batch size
             indices = self.Y.index[idx:idx+n]
@@ -155,6 +178,12 @@ def send_to_device(x, device):
         return x.to(device)
     else:
         return torch.tensor(x).to(device)
+
+def dkl_reg_loss(std_p, std_q):
+    # see https://doi.org/10.1016/j.eswa.2021.115974
+    std_p = std_p ** 2
+    std_q = std_q ** 2
+    return 0.5 * (torch.log(std_q / std_p) + (std_p / std_q) - 1)
 
 def compute_metrics(y_pred, y_pred_proba, y):
     cm = confusion_matrix(y, y_pred, labels=[0,1]).ravel()
@@ -299,6 +328,21 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
             y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
             opt.zero_grad()
             loss = F.binary_cross_entropy(F.sigmoid(pred), y)
+            if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:   # regularization loss
+                x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
+                x_pos = model(send_to_device(x_pos, device))
+                x_neg = model(send_to_device(x_neg, device))
+
+                # mean divergence regularization loss
+                mean_loss = (0.5 - torch.mean(torch.cat((x_pos, x_neg), dim=0)))**2
+                
+                # variance divergence regularization loss
+                std_pos = x_pos.std()
+                std_neg = x_neg.std()
+                variance_loss = dkl_reg_loss(std_pos, std_neg) + dkl_reg_loss(std_neg, std_pos)
+
+                # add to classification loss
+                loss += 0.5 * (exp_params["mean_reg_lambda"] * mean_loss + exp_params["variance_reg_lambda"] * variance_loss)
             loss.backward()
             opt.step()
         
@@ -323,6 +367,8 @@ if __name__ == "__main__":
     parser.add_argument('--n_dim', type=int, default=128, help="dimension after features fusion/concatenation")
     parser.add_argument('--n_layer', type=int, default=1, help="number of layers in attention fusion")
     parser.add_argument('--lambda_', type=float, default=0.5, help="lambda parameter for attention trade-off")
+    parser.add_argument('--mean_reg_lambda', type=float, default=0., help="lambda parameter for mean divergence regularization loss")
+    parser.add_argument('--variance_reg_lambda', type=float, default=0., help="lambda parameter for variance divergence regularization loss")
     parser.add_argument('--normalizer', type=str, default="scale", help="normalizer to pre-process data before training model")
     parser.add_argument('--pca', type=int, default=None, help="dimension after applying PCA, set to None to not apply")
     parser.add_argument('--optimizer', type=str, default="adam")
