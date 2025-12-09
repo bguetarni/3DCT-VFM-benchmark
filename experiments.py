@@ -157,7 +157,7 @@ def send_to_device(x, device):
         return torch.tensor(x).to(device)
 
 def compute_metrics(y_pred, y_pred_proba, y):
-    cm = confusion_matrix(y, y_pred).ravel()
+    cm = confusion_matrix(y, y_pred, labels=[0,1]).ravel()
 
     # handle case where only one label in y and y_pred
     # set all confusion matrix element to zero
@@ -165,8 +165,8 @@ def compute_metrics(y_pred, y_pred_proba, y):
     if len(cm) == 1:
         count = cm[0]
         cm = np.zeros((2,2), dtype=np.int64)
-        i = np.unique(y)
-        j = np.unique(y_pred)
+        i = int(np.unique(y).item())
+        j = int(np.unique(y_pred).item())
         cm[i,j] = count
         cm = cm.ravel()
 
@@ -177,7 +177,7 @@ def compute_metrics(y_pred, y_pred_proba, y):
             "f1_score": f1_score(y, y_pred, zero_division=0),
             "specificity": zero_division(tn, (tn + fp)),
             "sensitivity": zero_division(tp, (tp + fn)),
-            "log_loss": log_loss(y, y_pred_proba)}
+            "log_loss": log_loss(y, y_pred_proba, labels=[0,1])}
     return m
 
 def eval(model, loader, batch_size, device, per_center=False):
