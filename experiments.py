@@ -19,11 +19,15 @@ from classifiers.classifiers import Attention, Linear, Concat, Normalizer
 
 
 class DataLoader:
-    def __init__(self, base_path=None, X=None, Y=None, uniform_sampling=False):
+    def __init__(self, base_path=None, X=None, Y=None, uniform_sampling=False, class_weights=False):
         self.base_path = base_path
         self.X = X
         self.Y = Y
         self.uniform_sampling = uniform_sampling
+        self.class_weights = class_weights
+
+        if class_weights and not(Y is None):
+            self.cw = self.comput_class_weights()
 
     def len(self):
         return len(self.Y)
@@ -57,6 +61,20 @@ class DataLoader:
         self.X = self.X.drop(index=invalid_label_patients, errors="ignore")
         self.Y = self.Y.drop(index=invalid_label_patients)
 
+        if self.class_weights:
+            self.cw = self.comput_class_weights()
+
+    def comput_class_weights(self, t=0.01):
+        if self.Y is None:
+            raise ValueError("self.Y must be initialized before computing class weights")
+        
+        freq = dict(self.Y['label'].value_counts())   # frequence dict
+        self.cw = torch.zeros(len(freq), dtype=torch.float32)
+        for i in freq.key():   # populate values with inverse frequence
+            self.cw[i] = 1 / freq[i]
+        self.cw = torch.softmax(self.cw / t, dim=0)   # apply softmax with temperature to increase heterogeneity
+        self.cw = (self.cw - self.cw.mean()) + 1   # center values around 1
+
     def split(self, train_centers, test_centers, train_val_factor=0.8):
         assert set(train_centers).isdisjoint(set(test_centers)), "train and test centers must be disjoint"
 
@@ -88,7 +106,7 @@ class DataLoader:
         self.X = self.X.reindex(idx)
         self.Y = self.Y.reindex(idx)
 
-    def get_random_batch(self, n):
+    def get_random_batch(self, n, sample_weight=False):
         """
         get random batch taking into account centers equality
         """
@@ -108,7 +126,11 @@ class DataLoader:
             } for m in x.columns.get_level_values("modality").unique()}
         y = torch.tensor(y["label"].values)
 
-        return x, y
+        if sample_weight:
+            cw = self.cw[y]
+            return x, y, cw
+        else:
+            return x, y
     
     def get_random_batch_posneg(self, n):
         x_pos = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 1].index, size=n)]
@@ -254,7 +276,7 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
         X_test = norm.transform(X_test)
         normalizer.update({b: norm.get_params()})
 
-        train_loader = DataLoader(X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"])
+        train_loader = DataLoader(X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"], class_weights=exp_params["class_weights"])
         valid_loader = DataLoader(X=X_valid, Y=Y_valid)
         test_loader = DataLoader(X=X_test, Y=Y_test)
 
@@ -312,13 +334,21 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
                 if validation_loss[-1] == min(validation_loss):
                     best_state_dict.update({b: model.state_dict()})
             
-            # train iteration
+            # =====================   train iteration   =====================
             model.train()   # set to train mode
-            x, y = train_loader.get_random_batch(exp_params["bsize"])
+            
+            # get sample weigts for class weighting
+            if exp_params["class_weights"]:
+                x, y, cw = train_loader.get_random_batch(exp_params["bsize"], sample_weight=True)
+            else:
+                cw = None
+                x, y = train_loader.get_random_batch(exp_params["bsize"])
+
+            # compute batch loss
             pred = model(send_to_device(x, device))
             y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
             opt.zero_grad()
-            loss = F.binary_cross_entropy(F.sigmoid(pred), y)
+            loss = F.binary_cross_entropy(F.sigmoid(pred), y, weight=cw)
             if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:   # regularization loss
                 # sample positive and nagtaives probability distributions from model
                 x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
@@ -335,8 +365,11 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
 
                 # add to classification loss
                 loss += 0.5 * (exp_params["mean_reg_lambda"] * mean_loss + exp_params["variance_reg_lambda"] * variance_loss)
+
+            # param update
             loss.backward()
             opt.step()
+            # ===============================================================
         
     return train_metrics, test_metrics, best_state_dict, normalizer
 
@@ -361,6 +394,7 @@ if __name__ == "__main__":
     parser.add_argument('--lambda_', type=float, default=0.5, help="lambda parameter for attention trade-off")
     parser.add_argument('--mean_reg_lambda', type=float, default=0., help="lambda parameter for mean divergence regularization loss")
     parser.add_argument('--variance_reg_lambda', type=float, default=0., help="lambda parameter for variance divergence regularization loss")
+    parser.add_argument('--class_weights', action='store_true', help="wether to use class weighting in the loss to counter class imbalance")
     parser.add_argument('--normalizer', type=str, default="scale", help="normalizer to pre-process data before training model")
     parser.add_argument('--pca', type=int, default=None, help="dimension after applying PCA, set to None to not apply")
     parser.add_argument('--optimizer', type=str, default="adam")
