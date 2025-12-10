@@ -69,11 +69,13 @@ class DataLoader:
             raise ValueError("self.Y must be initialized before computing class weights")
         
         freq = dict(self.Y['label'].value_counts())   # frequence dict
-        self.cw = torch.zeros(len(freq), dtype=torch.float32)
-        for i in freq.key():   # populate values with inverse frequence
-            self.cw[i] = 1 / freq[i]
-        self.cw = torch.softmax(self.cw / t, dim=0)   # apply softmax with temperature to increase heterogeneity
-        self.cw = (self.cw - self.cw.mean()) + 1   # center values around 1
+        cw = torch.zeros(len(freq), dtype=torch.float32)
+        for i in freq.keys():   # populate values with inverse frequence
+            i = int(i)
+            cw[i] = 1 / freq[i]
+        cw = torch.softmax(cw / t, dim=0)   # apply softmax with temperature to increase heterogeneity
+        cw = (cw - cw.mean()) + 1   # center values around 1
+        return cw
 
     def split(self, train_centers, test_centers, train_val_factor=0.8):
         assert set(train_centers).isdisjoint(set(test_centers)), "train and test centers must be disjoint"
@@ -127,7 +129,7 @@ class DataLoader:
         y = torch.tensor(y["label"].values)
 
         if sample_weight:
-            cw = self.cw[y]
+            cw = self.cw[y.to(dtype=torch.long)]
             return x, y, cw
         else:
             return x, y
@@ -345,10 +347,10 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
                 x, y = train_loader.get_random_batch(exp_params["bsize"])
 
             # compute batch loss
-            pred = model(send_to_device(x, device))
+            pred = F.sigmoid(model(send_to_device(x, device))).view(-1)
             y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
             opt.zero_grad()
-            loss = F.binary_cross_entropy(F.sigmoid(pred), y, weight=cw)
+            loss = F.binary_cross_entropy(pred, y, weight=cw.to(device=device))
             if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:   # regularization loss
                 # sample positive and nagtaives probability distributions from model
                 x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
@@ -405,7 +407,7 @@ if __name__ == "__main__":
     parser.add_argument('--uniform_sampling', action='store_true', help="sample uniformly across centers for training")
     parser.add_argument('--gpu', type=str, default="", help='GPUs to use')
     args = parser.parse_args()
-    
+
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
     device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
     print(device)
