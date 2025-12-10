@@ -1,5 +1,6 @@
 import json
 import pickle
+import math
 import argparse
 import pathlib
 import os
@@ -93,7 +94,7 @@ class DataLoader:
         """
         if self.uniform_sampling:
             centers = self.Y["center"].unique()
-            n_per_center = int(np.ceil(n / len(centers)))
+            n_per_center = math.ceil(n / len(centers))
             idx = [np.random.choice(self.Y[self.Y["center"] == c].index, size=n_per_center, replace=False) for c in centers]
             idx = list(chain.from_iterable(idx))[:n]
         else:
@@ -110,18 +111,8 @@ class DataLoader:
         return x, y
     
     def get_random_batch_posneg(self, n):
-        if self.uniform_sampling:
-            centers = self.Y["center"].unique()
-            n_per_center = int(np.ceil(n / len(centers)))
-            
-            x_pos_idx = [np.random.choice(self.Y[(self.Y["center"] == c) & (self.Y["label"] == 1)].index, size=n_per_center) for c in centers]
-            x_pos = self.X.loc[list(chain.from_iterable(x_pos_idx))[:n]]
-            
-            x_neg_idx = [np.random.choice(self.Y[(self.Y["center"] == c) & (self.Y["label"] == 0)].index, size=n_per_center) for c in centers]
-            x_neg = self.X.loc[list(chain.from_iterable(x_neg_idx))[:n]]
-        else:
-            x_pos = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 1].index, size=n)]
-            x_neg = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 0].index, size=n)]
+        x_pos = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 1].index, size=n)]
+        x_neg = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 0].index, size=n)]
 
         x_pos = {m: {
                 k: torch.tensor(x_pos[(m, k)].values, dtype=torch.float32) for k in x_pos.columns.get_level_values("features")[x_pos.columns.get_level_values("modality") == m].unique()
@@ -329,9 +320,10 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
             opt.zero_grad()
             loss = F.binary_cross_entropy(F.sigmoid(pred), y)
             if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:   # regularization loss
+                # sample positive and nagtaives probability distributions from model
                 x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
-                x_pos = model(send_to_device(x_pos, device))
-                x_neg = model(send_to_device(x_neg, device))
+                x_pos = F.sigmoid(model(send_to_device(x_pos, device)))
+                x_neg = F.sigmoid(model(send_to_device(x_neg, device)))
 
                 # mean divergence regularization loss
                 mean_loss = (0.5 - torch.mean(torch.cat((x_pos, x_neg), dim=0)))**2
