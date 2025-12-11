@@ -314,7 +314,7 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
         # train/test loop
         for n_iter in tqdm.trange(exp_params["n_iter"], ncols=100):
             # eval iteration (on both train and test data)
-            if (n_iter + 1) % exp_params["eval_iter"] == 0:
+            if n_iter % exp_params["eval_iter"] == 0:
                 model.eval()
 
                 # train/val
@@ -342,6 +342,7 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
             # get sample weigts for class weighting
             if exp_params["class_weights"]:
                 x, y, cw = train_loader.get_random_batch(exp_params["bsize"], sample_weight=True)
+                cw = cw.to(device=device)
             else:
                 cw = None
                 x, y = train_loader.get_random_batch(exp_params["bsize"])
@@ -350,7 +351,7 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
             pred = F.sigmoid(model(send_to_device(x, device))).view(-1)
             y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
             opt.zero_grad()
-            loss = F.binary_cross_entropy(pred, y, weight=cw.to(device=device))
+            loss = F.binary_cross_entropy(pred, y, weight=cw)
             if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:   # regularization loss
                 # sample positive and nagtaives probability distributions from model
                 x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
