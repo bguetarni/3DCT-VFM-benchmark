@@ -170,11 +170,23 @@ class DataLoader:
             dataloader.append((center, DataLoader(self.base_path, x, y, self.uniform_sampling)))
         return dataloader
     
-    def undersampling(self):
-        label_counts = self.Y['label'].value_counts()
-        n = min(label_counts.values)
-        idx = [np.random.choice(self.Y[self.Y["label"] == i].index, size=n) for i in label_counts.keys()]
-        idx = np.concatenate(idx, axis=0)
+    def undersampling(self, per_center=True):
+        if per_center:
+            idx = []
+            for center in self.Y["center"].unique():
+                label_counts = self.Y[self.Y["center"] == center]['label'].value_counts()
+                n = min(label_counts.values)
+                if n == 0:
+                    idx.append(self.Y[self.Y["center"] == center].index)
+                else:
+                    for i in label_counts.keys():
+                        idx.append(np.random.choice(self.Y[(self.Y["center"] == center) & (self.Y["label"] == i)].index, size=n))
+            idx = np.concatenate(idx, axis=0)
+        else:
+            label_counts = self.Y['label'].value_counts()
+            n = min(label_counts.values)
+            idx = [np.random.choice(self.Y[self.Y["label"] == i].index, size=n) for i in label_counts.keys()]
+            idx = np.concatenate(idx, axis=0)
         self.X = self.X.loc[idx]
         self.Y = self.Y.loc[idx]
 
