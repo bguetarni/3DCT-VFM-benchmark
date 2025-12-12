@@ -169,6 +169,14 @@ class DataLoader:
             x = self.X.loc[y.index]
             dataloader.append((center, DataLoader(self.base_path, x, y, self.uniform_sampling)))
         return dataloader
+    
+    def undersampling(self):
+        label_counts = self.Y['label'].value_counts()
+        n = min(label_counts.values)
+        idx = [np.random.choice(self.Y[self.Y["label"] == i].index, size=n) for i in label_counts.keys()]
+        idx = np.concatenate(idx, axis=0)
+        self.X = self.X.loc[idx]
+        self.Y = self.Y.loc[idx]
 
 
 def zero_division(num, den):
@@ -281,6 +289,10 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
         train_loader = DataLoader(X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"], class_weights=exp_params["class_weights"])
         valid_loader = DataLoader(X=X_valid, Y=Y_valid)
         test_loader = DataLoader(X=X_test, Y=Y_test)
+
+        if exp_params["undersampling"]:
+            print("applying undersampling to training data")
+            train_loader.undersampling()
 
         print("training data stat:")
         print(display_split_stats(train_loader))
@@ -398,6 +410,7 @@ if __name__ == "__main__":
     parser.add_argument('--mean_reg_lambda', type=float, default=0., help="lambda parameter for mean divergence regularization loss")
     parser.add_argument('--variance_reg_lambda', type=float, default=0., help="lambda parameter for variance divergence regularization loss")
     parser.add_argument('--class_weights', action='store_true', help="wether to use class weighting in the loss to counter class imbalance")
+    parser.add_argument('--undersampling', action='store_true', help="wether to apply data undersampling to the training data")
     parser.add_argument('--normalizer', type=str, default="scale", help="normalizer to pre-process data before training model")
     parser.add_argument('--pca', type=int, default=None, help="dimension after applying PCA, set to None to not apply")
     parser.add_argument('--optimizer', type=str, default="adam")
