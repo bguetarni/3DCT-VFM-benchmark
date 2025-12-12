@@ -81,12 +81,12 @@ class DataLoader:
         assert set(train_centers).isdisjoint(set(test_centers)), "train and test centers must be disjoint"
 
         if train_val_factor is None:
-            X_train = self.X
-            Y_train = self.Y
+            Y_train = self.Y[self.Y["center"].isin(train_centers)]
+            X_train = self.X.loc[Y_train.index]
             X_valid = None
             Y_valid = None
         else:
-            train_idx = list(self.Y["center"].isin(train_centers).index)
+            train_idx = list(self.Y[self.Y["center"].isin(train_centers)].index)
             np.random.shuffle(train_idx)
             n = int(train_val_factor*len(train_idx))
             val_idx = train_idx[n:]
@@ -115,7 +115,11 @@ class DataLoader:
         if self.uniform_sampling:
             centers = self.Y["center"].unique()
             n_per_center = math.ceil(n / len(centers))
-            idx = [np.random.choice(self.Y[self.Y["center"] == c].index, size=n_per_center, replace=False) for c in centers]
+            idx = []
+            for c in centers:
+                indices = self.Y[self.Y["center"] == c].index
+                # take random sample as min between center size and batch/centers, otherwise error of sampling
+                idx.append(np.random.choice(indices, size=min(len(indices), n_per_center), replace=False))
             idx = list(chain.from_iterable(idx))[:n]
         else:
             idx = np.random.choice(self.X.index, size=n, replace=False)
@@ -180,12 +184,12 @@ class DataLoader:
                     idx.append(self.Y[self.Y["center"] == center].index)
                 else:
                     for i in label_counts.keys():
-                        idx.append(np.random.choice(self.Y[(self.Y["center"] == center) & (self.Y["label"] == i)].index, size=n))
+                        idx.append(np.random.choice(self.Y[(self.Y["center"] == center) & (self.Y["label"] == i)].index, size=n, replace=False))
             idx = np.concatenate(idx, axis=0)
         else:
             label_counts = self.Y['label'].value_counts()
             n = min(label_counts.values)
-            idx = [np.random.choice(self.Y[self.Y["label"] == i].index, size=n) for i in label_counts.keys()]
+            idx = [np.random.choice(self.Y[self.Y["label"] == i].index, size=n, replace=False) for i in label_counts.keys()]
             idx = np.concatenate(idx, axis=0)
         self.X = self.X.loc[idx]
         self.Y = self.Y.loc[idx]
