@@ -240,7 +240,7 @@ def compute_metrics(y_pred, y_pred_proba, y):
 
     tn, fp, fn, tp = cm
     m = {"acc": accuracy_score(y, y_pred),
-            "auc": roc_auc_score(y, y_pred),
+            "auc": roc_auc_score(y, y_pred_proba),
             "balanced_accuracy": balanced_accuracy_score(y, y_pred),
             "f1_score": f1_score(y, y_pred, zero_division=0),
             "specificity": zero_division(tn, (tn + fp)),
