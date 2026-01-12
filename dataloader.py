@@ -8,6 +8,7 @@ import pickle
 import pydicom
 import pandas
 import datetime
+import numpy as np
 from monai.transforms import Flip, SpatialCrop
 
 import dicom_class
@@ -15,6 +16,8 @@ import dicom_utils
 
 recurrence_2y_name = "R2y"
 recurrence_5y_name = "R5y"
+
+CATEGORICAL_CLINICAL_VARIABLES = ["sex", "ecog", "smoking", "stage", "hpv", "treatment"]
 
 def convert2date(dt):
     return datetime.datetime.strptime(dt, "%d/%m/%Y").date()
@@ -641,7 +644,6 @@ class HNSCC3DCTRT(TCIA):
         if clinical: return clinical[0]
         else: return {}
 
-
 class OropharyngealRadiomicsOutcomes(TCIA):
     def __init__(self, path):
         super().__init__(path)
@@ -821,6 +823,33 @@ class RADCURE(TCIA):
     def __init__(self, path):
         super().__init__(path)
 
+        self.clinical_key_mapping = {
+            "Sex": "sex",
+            "ECOG PS": "ecog",
+            "Smoking Status": "smoking",
+            "Stage": "stage",
+            "HPV": "hpv",
+            "Tx Modality": "treatment",
+            "Age": "age",
+            "Dose": "dose",
+        }
+
+        self.clinical_encoding = {
+            "Sex": {"Female": 0, "Male": 1},
+            
+            "ECOG PS": {"ECOG 0": 0, "ECOG 2": 1, "ECOG 1": 0, "ECOG 4": 3, "ECOG 3": 2, "ECOG-Pt 2": 1, 
+                        "ECOG 0-1": 0, "ECOG-Pt 0": 0, "ECOG-Pt 1": 0},
+            
+            "Smoking Status": {"Ex-smoker": 1, "Non-smoker": 0, "Current": 2},
+            
+            "Stage": {"IVB": 4, "I": 1, "IVA": 4, "III": 3, "II": 2, "IV": 4, "IIIC": 3, "IB": 1, 
+                      "IIA": 2, "IIIA": 3, "IVC": 4, "IIB": 2, "0": 0},
+            
+            "HPV": {"Yes, Negative": 0, "Yes, positive": 1},
+            
+            "Tx Modality": {"RT alone": 0, "ChemoRT": 1, "ChemoRT ": 1, "Postop RT alone": 0},
+        }
+
     def get_patient_clinical_data(self, patient_id):
         clinical = pandas.read_excel(os.path.join(self.path, "RADCURE_Clinical_v04_20241219 (1).xlsx"))
         clinical = clinical[clinical["patient_id"] == patient_id].to_dict('records')
@@ -863,14 +892,17 @@ class RADCURE(TCIA):
         # concatenate features and modalities
         features = []
         for file_ in base_path.joinpath("features", "radcure").iterdir():
+            if file_.name.startswith("llm"):
+                continue
             fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["modality"] = "image"
             fts["features"] = file_.stem
-            features.append(fts)        
+            features.append(fts)
         features = pandas.concat(features)
 
         # build labels
         label = []
+        clinical = []
         for id_, p in patients.items():
             try:
                 # add fractions to rt start date to obtain RT end date
@@ -898,7 +930,24 @@ class RADCURE(TCIA):
                           "center": "UHN", # University Health Network
                           recurrence_2y_name: r2y, 
                           recurrence_5y_name: r5y})
+            
+            # build clinical features
+            for k, v in p.clinical.items():
+                if k in self.clinical_key_mapping.keys():
+                    if k in self.clinical_encoding.keys(): # categorical feature
+                        try:
+                            v = self.clinical_encoding[k][v]
+                        except KeyError:
+                            v = None
+                    else: # numerical feature
+                        try:
+                            v = float(v)
+                        except ValueError:
+                            v = None
+                    clinical.append({"patient": id_, "modality": "clinical", "features": self.clinical_key_mapping[k], "name": 0, "value": v})
+        
         label = pandas.DataFrame(label)
+        features = pandas.concat([features, pandas.DataFrame(clinical)])
         return features, label
 
     def get_spatial_transforms():

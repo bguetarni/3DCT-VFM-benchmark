@@ -4,52 +4,48 @@ setlocal
 call activate radiomics
 
 :: set arguments
-set CODE=016
+set CODE=029
 set OUTPUT=C:/Users/bilel.guetarni/Desktop/workspace/SEQ-RT/experiments/%CODE%
 set TASK=R2y
-set BOOTSTRAP=10
-set N_ITER=10000
-set EVAL_ITER=100
+set KFOLD=5
+set TRAIN_SIZE=0.8
+set EPOCHS=100
+set DATASET=radcure
 
 :: linear classifier
 set BISZE=32
 set LR=1e-3
-set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 0"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors suprem --classifier linear --normalizer scale --lr %LR% --bsize %BISZE%  --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 0"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors vista3d --classifier linear --normalizer scale --lr %LR% --bsize %BISZE%  --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 0"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb --classifier linear --normalizer scale --lr %LR% --bsize %BISZE%  --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 0"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors llm-BioLORD-2023-M --classifier linear --normalizer scale --lr %LR% --bsize %BISZE%  --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 0"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors llm-embeddinggemma-300m-medical --classifier linear --normalizer scale --lr %LR% --bsize %BISZE%  --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 0"
+set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors ct-fm --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --gpu 0"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors suprem --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --gpu 0"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors vista3d --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --gpu 0"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality clinical --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --gpu 0"
+start cmd /k "%CMD%"
+
+:: ffn classifier
+set BISZE=32
+set LR=1e-3
+set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors ct-fm --classifier ffn --normalizer scale --lr %LR% --bsize %BISZE% --gpu 3"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors suprem --classifier ffn --normalizer scale --lr %LR% --bsize %BISZE% --gpu 3"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors vista3d --classifier ffn --normalizer scale --lr %LR% --bsize %BISZE% --gpu 3"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality clinical --classifier ffn --normalizer scale --lr %LR% --bsize %BISZE% --gpu 3"
 start cmd /k "%CMD%"
 
 :: concat classifier
 set BISZE=32
 set LR=1e-3
-set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm,llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm,llm-BioLORD-2023-M --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm,llm-embeddinggemma-300m-medical --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors suprem,llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors suprem,llm-BioLORD-2023-M --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors suprem,llm-embeddinggemma-300m-medical --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors vista3d,llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors vista3d,llm-BioLORD-2023-M --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors vista3d,llm-embeddinggemma-300m-medical --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm,suprem,vista3d,llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb,llm-BioLORD-2023-M,llm-embeddinggemma-300m-medical --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 1"
+set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors ct-fm --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --gpu 1"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors suprem --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --gpu 1"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors vista3d --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --gpu 1"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors ct-fm,suprem,vista3d --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --gpu 1"
 start cmd /k "%CMD%"
 
 :: attention classifier
 set BISZE=32
 set LR=1e-3
-set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm,llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm,llm-BioLORD-2023-M --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm,llm-embeddinggemma-300m-medical --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors suprem,llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors suprem,llm-BioLORD-2023-M --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors suprem,llm-embeddinggemma-300m-medical --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors vista3d,llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors vista3d,llm-BioLORD-2023-M --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors vista3d,llm-embeddinggemma-300m-medical --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
-set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --bootstrap %BOOTSTRAP% --extractors ct-fm,suprem,vista3d,llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb,llm-BioLORD-2023-M,llm-embeddinggemma-300m-medical --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --n_iter %N_ITER% --eval_iter %EVAL_ITER% --uniform_sampling --gpu 2"
+set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors ct-fm --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --gpu 2"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors suprem --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --gpu 2"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors vista3d --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --gpu 2"
+set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors ct-fm,suprem,vista3d --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --gpu 2"
 start cmd /k "%CMD%"
 
 endlocal

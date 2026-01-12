@@ -9,18 +9,25 @@ import pandas
 import numpy as np
 import tqdm
 from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, f1_score, log_loss, confusion_matrix
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 import torch
 import torch.nn.functional as F
 import coolname
 
 from dataloader import ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, QINHEADNECK, OropharyngealRadiomicsOutcomes, RADCURE
-from dataloader import recurrence_2y_name, recurrence_5y_name
-from classifiers.classifiers import Attention, Linear, Concat, Normalizer
+from dataloader import recurrence_2y_name, recurrence_5y_name, CATEGORICAL_CLINICAL_VARIABLES
+from classifiers.classifiers import Attention, Linear, Concat, MLP_head, Normalizer
+
+def one_hot_encode(value, max_value):
+    one_hot = np.zeros(max_value + 1)
+    one_hot[value] = 1
+    return one_hot
 
 
 class DataLoader:
-    def __init__(self, base_path=None, X=None, Y=None, uniform_sampling=False, class_weights=False):
+    def __init__(self, base_path, name, X=None, Y=None, uniform_sampling=False, class_weights=False):
         self.base_path = base_path
+        self.name = name
         self.X = X
         self.Y = Y
         self.uniform_sampling = uniform_sampling
@@ -36,31 +43,82 @@ class DataLoader:
         return self.X.loc[idx], self.Y.loc[idx]
 
     def build_dataset(self):
-        features = pandas.DataFrame([])
-        labels = pandas.DataFrame([])
-        for loader in tqdm.tqdm([ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, QINHEADNECK, OropharyngealRadiomicsOutcomes, RADCURE], ncols=100):
-            loader = loader(None)
-            x, y = loader.build_dataset(self.base_path)
-            features = pandas.concat((features, x))
-            labels = pandas.concat((labels, y))
-        self.X = features
-        self.Y = labels
+        match self.name:
+            case "artix":
+                loader = ARTIX
+            case "hecktor":
+                loader = HECKTOR
+            case "headneckctatlas":
+                loader = HeadNeckCTAtlas
+            case "headneckpetct":
+                loader = HeadNeckPETCT
+            case "qinheadneck":
+                loader = QINHEADNECK
+            case "oropharyngealradiomicsoutcomes":
+                loader = OropharyngealRadiomicsOutcomes
+            case "radcure":
+                loader = RADCURE
+            case _:
+                raise ValueError(f"dataset name {self.name} not recognized. See args.dataset argument choices.")
+            
+        loader = loader(None)
+        x, y = loader.build_dataset(self.base_path)
+        self.X = x
+        self.Y = y
 
     def prepare_data(self, exp_params, task):
-        features_name = list(chain.from_iterable(i.keys() for i in exp_params["dims"].values()))
-        self.X = self.X[self.X["features"].isin(features_name)]
+        """
+        prepare data for training according to experiment parameters and task
+        keep only modalities and imaging features defined in exp_params
+        remove patients with missing data or invalid label
+        """
+
+        # select only imaging features defined in exp_params
+        self.X = self.X[(self.X["modality"] != "image") | (self.X["modality"] == "image" & self.X["features"].isin(exp_params["extractors"]))]
+
+        # one hot encode categorical clinical variables
+        X_clinical = self.X[self.X["modality"] == "clinical"]
+        df = []
+        for _, row in X_clinical.iterrows():
+            if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
+                max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
+                if max_value > 1:
+                    one_hot = one_hot_encode(int(row["value"]), max_value)
+                    for i, v in enumerate(one_hot):
+                        df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
+                else:
+                    df.append(row.to_dict())
+            else:
+                df.append(row.to_dict())
+        
+        X_clinical = pandas.DataFrame(df)
+        X_image = self.X[self.X["modality"] != "clinical"]
+
+        # merge modalities
+        if exp_params["modality"] == "image":
+            self.X = X_image
+        elif exp_params["modality"] == "clinical":
+            self.X = X_clinical
+        else:
+            self.X = pandas.concat([X_image, X_clinical], ignore_index=True)
+
+        # pivot dataframe and sort columns names
         self.X = self.X.pivot(index="patient", columns=["modality", "features", "name"], values="value")
         self.X = self.X.sort_index(axis="columns")
 
         self.Y = self.Y.set_index("patient")
         if not(task in self.Y.columns):
-            raise ValueError(f"task {task} not valid. Validones are [{recurrence_2y_name}, {recurrence_5y_name}]")
+            raise ValueError(f"task {task} not valid. Valid ones are [{recurrence_2y_name}, {recurrence_5y_name}]")
         self.Y = self.Y[["center", task]].rename(columns={task: "label"})
 
-        invalid_label_patients = self.Y[pandas.isna(self.Y["label"])].index
-        self.X = self.X.drop(index=invalid_label_patients, errors="ignore")
-        self.Y = self.Y.drop(index=invalid_label_patients)
+        # remove patients with invalid label or missing data
+        invalid_label_patients = self.Y[self.Y["label"].isna()].index
+        missing_data_patients = self.X[self.X.isna().any(axis=1)].index
+        remove_indices = [*invalid_label_patients, *missing_data_patients]
+        self.X = self.X.drop(index=remove_indices, errors="ignore")
+        self.Y = self.Y.drop(index=remove_indices, errors="ignore")
 
+        # if using loss class weighting, compute class weights
         if self.class_weights:
             self.cw = self.comput_class_weights()
 
@@ -77,36 +135,37 @@ class DataLoader:
         cw = (cw - cw.mean()) + 1   # center values around 1
         return cw
 
-    def split(self, train_centers, test_centers, train_val_factor=0.8):
-        assert set(train_centers).isdisjoint(set(test_centers)), "train and test centers must be disjoint"
-
-        if train_val_factor is None:
-            Y_train = self.Y[self.Y["center"].isin(train_centers)]
-            X_train = self.X.loc[Y_train.index]
-            X_valid = None
-            Y_valid = None
-        else:
-            train_idx = list(self.Y[self.Y["center"].isin(train_centers)].index)
-            np.random.shuffle(train_idx)
-            n = int(train_val_factor*len(train_idx))
-            val_idx = train_idx[n:]
-            train_idx = train_idx[:n]
-
-            X_train = self.X.loc[self.X.index.isin(train_idx)]
-            Y_train = self.Y.loc[X_train.index]
-
-            X_valid = self.X.loc[self.X.index.isin(val_idx)]
-            Y_valid = self.Y.loc[X_valid.index]
-
-        Y_test = self.Y[self.Y["center"].isin(test_centers)]
-        X_test = self.X.loc[Y_test.index]
+    def split(self, kfold, train_val_split=0.6):
+        """
+        split data into kfold train/validation/test sets
         
-        return X_train, Y_train, X_valid, Y_valid, X_test, Y_test
-    
-    def shuffle(self):
-        idx = np.random.permutation(self.X.index)
-        self.X = self.X.reindex(idx)
-        self.Y = self.Y.reindex(idx)
+        kfold (int) number of folds
+        train_val_split (float) proportion of training data used for training (rest for validation)
+        """
+
+        # define indices and target for stratification
+        sample_idx = np.array(self.Y.index)
+        sample_target = self.Y["label"].values
+
+        # stratified kfold split to ensure similar label distribution across folds
+        skf = StratifiedKFold(n_splits=kfold, shuffle=True)
+        for train_index, test_index in skf.split(sample_idx, sample_target):
+            X_train_val = self.X.loc[self.X.index.isin(sample_idx[train_index])]
+            Y_train_val = self.Y.loc[X_train_val.index]
+
+            X_test = self.X.loc[self.X.index.isin(sample_idx[test_index])]
+            Y_test = self.Y.loc[X_test.index]
+
+            # further split train into train and validation
+            sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
+            train_idx, val_idx = next(sss.split(Y_train_val.index, Y_train_val["label"].values))
+            X_train = X_train_val.loc[X_train_val.index.isin(train_idx)]
+            Y_train = Y_train_val.loc[X_train.index]
+
+            X_valid = X_train_val.loc[X_train_val.index.isin(val_idx)]
+            Y_valid = Y_train_val.loc[X_valid.index]
+
+            yield (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test)
 
     def get_random_batch(self, n, sample_weight=False):
         """
@@ -152,28 +211,29 @@ class DataLoader:
         
         return x_pos, x_neg
     
-    def batch_iterator(self, n):
+    def batch_iterator(self, n, sample_weight=False):
         for idx in range(0, len(self.Y), n):   # handle case where dataset smaller than batch size
             indices = self.Y.index[idx:idx+n]
             x = self.X.loc[indices]
             y = self.Y.loc[indices]
 
-            x = {m: {
-                k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()
-            } for m in x.columns.get_level_values("modality").unique()}
+            x = {}
+            for m in x.columns.get_level_values("modality").unique():
+                if m == "image":
+                    x.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
+                else:
+                    x.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
+            
             y = torch.tensor(y["label"].values)
 
-            yield x, y
-        return StopIteration
+            if sample_weight:
+                cw = self.cw[y.to(dtype=torch.long)]
+            else:
+                cw = None
 
-    def split_per_center(self):
-        dataloader = []
-        for center in self.Y["center"].unique():
-            y = self.Y[self.Y["center"] == center]
-            x = self.X.loc[y.index]
-            dataloader.append((center, DataLoader(self.base_path, x, y, self.uniform_sampling)))
-        return dataloader
-    
+            yield x, y, cw
+        return StopIteration
+   
     def undersampling(self, per_center=True):
         if per_center:
             idx = []
@@ -248,59 +308,65 @@ def compute_metrics(y_pred, y_pred_proba, y):
             "log_loss": log_loss(y, y_pred_proba, labels=[0,1])}
     return m
 
-def eval(model, loader, batch_size, device, per_center=False):
-    if per_center:
-        metrics = {}
-        for center, center_loader in loader.split_per_center():
-            metrics.update({center: eval(model, center_loader, batch_size, device)})
-        return metrics
-    else:
-        y_pred_proba = []
-        y_pred = []
-        y_true = []
-        for batch in loader.batch_iterator(batch_size):
-            if batch == StopIteration:
-                break
-            x, y = batch
-            with torch.no_grad():
-                pred_proba = model(send_to_device(x, device)).to("cpu")
-                pred_proba = F.sigmoid(pred_proba)
-                y_pred_proba.append(pred_proba.flatten())
-                y_pred.append(torch.round(pred_proba.flatten()))
-                y_true.append(y)
-        y_pred = torch.cat(y_pred, dim=0)
-        y_pred_proba = torch.cat(y_pred_proba, dim=0)
-        y_true = torch.cat(y_true, dim=0)
-        return compute_metrics(y_pred, y_pred_proba, y_true)
+def eval(model, loader, batch_size, device):
+    y_pred_proba = []
+    y_pred = []
+    y_true = []
+    for batch in loader.batch_iterator(batch_size):
+        if batch is StopIteration:
+            break
+        x, y, _ = batch
+        with torch.no_grad():
+            pred_proba = model(send_to_device(x, device)).to("cpu")
+            pred_proba = F.sigmoid(pred_proba)
+            y_pred_proba.append(pred_proba.flatten())
+            y_pred.append(torch.round(pred_proba.flatten()))
+            y_true.append(y)
+    y_pred = torch.cat(y_pred, dim=0)
+    y_pred_proba = torch.cat(y_pred_proba, dim=0)
+    y_true = torch.cat(y_true, dim=0)
+    return compute_metrics(y_pred, y_pred_proba, y_true)
 
-def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
+def kfold_training(exp_params, data_loader, kfold, device="cpu"):
     """
-    Perform bootstrap training and testing and return classification metrics as dict
+    Perform kfold training and testing and return classification metrics as dict
 
     Args:
         exp_params (dict) experiment parameters
         data_loader (DataLoader) data loader
         device (torch.device) device for model
-        bootstrap (int) number of bootstraps
+        kfold (int) number of kfold cross-validation folds
     """
 
     train_metrics = []
     test_metrics = []
     best_state_dict = {}
     normalizer = {}
-    for b in range(bootstrap):
-        print(f"bootstrap {b+1}/{bootstrap}")
+    for k, (tain_data, valid_data, test_data) in enumerate(data_loader.split(kfold, train_val_split=args.train_split)):
+        print(f"kfold {k+1}/{kfold}")
+        X_train, Y_train = tain_data
+        X_valid, Y_valid = valid_data
+        X_test, Y_test = test_data
 
-        # split into train and test based on centers
-        X_train, Y_train, X_valid, Y_valid, X_test, Y_test = data_loader.split(INTERNAL_CENTERS, EXTERNAL_CENTERS)
+        # construct dict of number of dimensions for each modality and features
+        dims = {}
+        for m, f, _ in X_train.columns:
+            if m == "clinical":
+                if not("clinical" in dims.keys()): dims.update({"clinical": 0})
+                dims["clinical"] += 1
+            else:
+                if not(m in dims.keys()): dims.update({m: {}})
+                if not(f in dims[m].keys()): dims[m].update({f: 0})
+                dims[m][f] += 1
+        exp_params.update({"dims": dims})
 
-        # apply normalization function column-wise
+        # apply normalization function column-wise to image features
         print("normalizing features values..")
         norm = Normalizer(args.normalizer)
-        X_train = norm.fit_transform(X_train)
-        X_valid = norm.transform(X_valid)
-        X_test = norm.transform(X_test)
-        normalizer.update({b: norm.get_params()})
+        X_train.loc[:, ["image"]] = norm.fit_transform(X_train.loc[:, ["image"]])
+        X_valid.loc[:, ["image"]] = norm.transform(X_valid.loc[:, ["image"]])
+        X_test.loc[:, ["image"]] = norm.transform(X_test.loc[:, ["image"]])
+        normalizer.update({k: norm.get_params()})
 
         train_loader = DataLoader(X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"], class_weights=exp_params["class_weights"])
         valid_loader = DataLoader(X=X_valid, Y=Y_valid)
@@ -320,11 +386,20 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
         match exp_params["classifier"]:
             case "attention":
                 model = Attention(**exp_params)
-            case "linear":
-                n_dim = list(chain.from_iterable([v.values() for v in exp_params["dims"].values()]))[0]
-                model = Linear(n_dim, n_class=1)
             case "concat":
                 model = Concat(**exp_params)
+            case "linear":
+                if isinstance(list(dims.values())[0], dict):
+                    n_dim = sum(list(list(dims.values())[0].values()))
+                else:
+                    n_dim = list(dims.values())[0]
+                model = Linear(n_dim, n_class=1)
+            case "ffn":
+                if isinstance(list(dims.values())[0], dict):
+                    n_dim = sum(list(list(dims.values())[0].values()))
+                else:
+                    n_dim = list(dims.values())[0]
+                model = MLP_head(n_dim, n_class=1)
             case _:
                 raise ValueError(f"experiment parameter classifier type not recognized: {exp_params['classifier']}")
             
@@ -340,86 +415,86 @@ def cross_validation(exp_params, data_loader, device="cpu", bootstrap=1):
         model.to(device)
         
         # train/test loop
-        for n_iter in tqdm.trange(exp_params["n_iter"], ncols=100):
-            # eval iteration (on both train and test data)
-            if n_iter % exp_params["eval_iter"] == 0:
-                model.eval()
-
-                # train/val
-                for split, loader in [("train", train_loader), ("valid", valid_loader)]:
-                    metrics = eval(model, loader, exp_params["bsize"], device)
-                    for m, v in metrics.items():
-                        train_metrics.append({"split": split, "metric": m, "value": v, "bootstrap": b, "step": n_iter})
-                
-                # test
-                metrics = eval(model, test_loader, exp_params["bsize"], device, per_center=True)
-                for center, ms in metrics.items():
-                    for m, v in ms.items():
-                        test_metrics.append({"center": center, "split": "test", "metric": m, "value": v, "bootstrap": b, "step": n_iter})
-
-                # save checkpoint if current validation loss is lowest
-                validation_loss = pandas.DataFrame(train_metrics)
-                validation_loss = validation_loss[(validation_loss["metric"] == "log_loss") & (validation_loss["split"] == "valid") & (validation_loss["bootstrap"] == b)]
-                validation_loss = validation_loss["value"].values
-                if validation_loss[-1] == min(validation_loss):
-                    best_state_dict.update({b: model.state_dict()})
+        for epoch in tqdm.trange(exp_params["epoch"], ncols=100):
             
             # =====================   train iteration   =====================
             model.train()   # set to train mode
+
+            for batch in train_loader.batch_iterator(exp_params["bsize"], sample_weight=exp_params["class_weights"]):
+                # stop if StopIteration returned
+                if batch is StopIteration:
+                    break
+
+                x, y, cw = batch
+
+                if not(cw is None):
+                    cw = cw.to(device=device)
+
+                # compute batch loss
+                pred = F.sigmoid(model(send_to_device(x, device))).view(-1)
+                y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
+                opt.zero_grad()
+                loss = F.binary_cross_entropy(pred, y, weight=cw)
+                if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:   # regularization loss
+                    # sample positive and nagtaives probability distributions from model
+                    x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
+                    x_pos = F.sigmoid(model(send_to_device(x_pos, device)))
+                    x_neg = F.sigmoid(model(send_to_device(x_neg, device)))
+
+                    # mean divergence regularization loss
+                    mean_loss = (0.5 - torch.mean(torch.cat((x_pos, x_neg), dim=0)))**2
+                    
+                    # variance divergence regularization loss
+                    std_pos = x_pos.std()
+                    std_neg = x_neg.std()
+                    variance_loss = dkl_reg_loss(std_pos, std_neg) + dkl_reg_loss(std_neg, std_pos)
+
+                    # add to classification loss
+                    loss += 0.5 * (exp_params["mean_reg_lambda"] * mean_loss + exp_params["variance_reg_lambda"] * variance_loss)
+
+                # param update
+                loss.backward()
+                opt.step()
+            # =========================================================================
+
+            # =====================   validation/test iteration   =====================
+            model.eval() # set to eval mode
+
+            # train/val
+            for split, loader in [("train", train_loader), ("valid", valid_loader)]:
+                metrics = eval(model, loader, exp_params["bsize"], device)
+                for m, v in metrics.items():
+                    train_metrics.append({"split": split, "metric": m, "value": v, "kfold": k, "step": epoch})
             
-            # get sample weigts for class weighting
-            if exp_params["class_weights"]:
-                x, y, cw = train_loader.get_random_batch(exp_params["bsize"], sample_weight=True)
-                cw = cw.to(device=device)
-            else:
-                cw = None
-                x, y = train_loader.get_random_batch(exp_params["bsize"])
+            # test
+            metrics = eval(model, test_loader, exp_params["bsize"], device)
+            for m, v in metrics.items():
+                test_metrics.append({"split": "test", "metric": m, "value": v, "kfold": k, "step": epoch})
 
-            # compute batch loss
-            pred = F.sigmoid(model(send_to_device(x, device))).view(-1)
-            y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
-            opt.zero_grad()
-            loss = F.binary_cross_entropy(pred, y, weight=cw)
-            if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:   # regularization loss
-                # sample positive and nagtaives probability distributions from model
-                x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
-                x_pos = F.sigmoid(model(send_to_device(x_pos, device)))
-                x_neg = F.sigmoid(model(send_to_device(x_neg, device)))
-
-                # mean divergence regularization loss
-                mean_loss = (0.5 - torch.mean(torch.cat((x_pos, x_neg), dim=0)))**2
-                
-                # variance divergence regularization loss
-                std_pos = x_pos.std()
-                std_neg = x_neg.std()
-                variance_loss = dkl_reg_loss(std_pos, std_neg) + dkl_reg_loss(std_neg, std_pos)
-
-                # add to classification loss
-                loss += 0.5 * (exp_params["mean_reg_lambda"] * mean_loss + exp_params["variance_reg_lambda"] * variance_loss)
-
-            # param update
-            loss.backward()
-            opt.step()
-            # ===============================================================
+            # save checkpoint if current validation loss is lowest
+            validation_loss = pandas.DataFrame(train_metrics)
+            validation_loss = validation_loss[(validation_loss["metric"] == "log_loss") & (validation_loss["split"] == "valid") & (validation_loss["kfold"] == k)]
+            validation_loss = validation_loss["value"].values
+            if validation_loss[-1] == min(validation_loss):
+                best_state_dict.update({k: model.state_dict()})
+            # =========================================================================
         
     return train_metrics, test_metrics, best_state_dict, normalizer
 
 
-INTERNAL_CENTERS = ["CHUM", "CHUP", "CHUS", "HGJ", "HMR", "MDA", "USZ", "UHN"]
-EXTERNAL_CENTERS = ["CEM", "UIHC"]
-
-DIMS = {
-    "image": {"ct-fm": 512, "suprem": 128, "vista3d": 768}, 
-    "clinical": {"llm-BioBERT-mnli-snli-scinli-scitail-mednli-stsb": 768, "llm-BioLORD-2023-M": 768, "llm-embeddinggemma-300m-medical": 768},
-    }
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset', type=str, required=True, choices=["artix", "headneckctatlas", "headneckpetct", "hecktor", "oropharyngealradiomicsoutcomes", "qinheadneck", "radcure"], 
+                        help='name of dataset')
+    parser.add_argument('--kfold', type=int, default=5, help='number of kfold cross-validation folds')
+    parser.add_argument('--train_split', type=float, default=0.8, help='proportion of training data used for training (rest for validation)')
+    parser.add_argument('--epoch', type=int, default=100, help="number of training epochs")
+    parser.add_argument('--modality', type=str, required=True, choices=["both", "image", "clinical"],  help="which modality to use")
+    
     parser.add_argument('--task', type=str, required=True, choices=[recurrence_2y_name, recurrence_5y_name], help="task to train model on")
-    parser.add_argument('--output', type=str, required=True, help='path to save results')
-    parser.add_argument('--bootstrap', type=int, default=1, help='number of bootstraps')
-    parser.add_argument('--extractors', type=str, required=True, help="extractors separated by comma (e.g., 'ct-fm,suprem')")
-    parser.add_argument('--classifier', type=str, required=True, choices=["attention", "concat", "linear"], help="classifier type")
+    parser.add_argument('--output', type=str, required=True, help='path to save results')    
+    parser.add_argument('--extractors', type=str, default="ct-fm", help="extractors separated by comma (e.g., 'ct-fm,suprem')")
+    parser.add_argument('--classifier', type=str, required=True, choices=["attention", "concat", "linear", "ffn"], help="classifier type")
     parser.add_argument('--n_dim', type=int, default=128, help="dimension after features fusion/concatenation")
     parser.add_argument('--n_layer', type=int, default=1, help="number of layers in attention fusion")
     parser.add_argument('--lambda_', type=float, default=0.5, help="lambda parameter for attention trade-off")
@@ -432,8 +507,6 @@ if __name__ == "__main__":
     parser.add_argument('--optimizer', type=str, default="adam")
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--bsize', type=int, default=1)
-    parser.add_argument('--n_iter', type=int, default=1000, help="number of training iterations")
-    parser.add_argument('--eval_iter', type=int, default=10, help="number of training iterations between evaluations")
     parser.add_argument('--uniform_sampling', action='store_true', help="sample uniformly across centers for training")
     parser.add_argument('--gpu', type=str, default="", help='GPUs to use')
     args = parser.parse_args()
@@ -447,11 +520,10 @@ if __name__ == "__main__":
     
     # experiment parameters
     exp_params = vars(args)
-    extractors = args.extractors.split(",")
-    exp_params.update({"dims": {m: {k: v for k,v in DIMS[m].items() if k in extractors} for m in DIMS.keys()}})
+    exp_params["extractors"] = args.extractors.split(",")
     
     # construct data loader
-    data_loader = DataLoader(base_path="./")
+    data_loader = DataLoader(base_path="./", name=exp_params["dataset"])
 
     # data processing
     print("loading cohorts...")
@@ -461,7 +533,7 @@ if __name__ == "__main__":
 
     # fit model
     print("fitting model")
-    train_metrics, test_metrics, best_state_dict, normalizer = cross_validation(exp_params, data_loader, device, args.bootstrap)
+    train_metrics, test_metrics, best_state_dict, normalizer = kfold_training(exp_params, data_loader, args.kfold, device,)
     
     # save results
     pandas.DataFrame(train_metrics).to_csv(out_path.joinpath("train_metrics.csv"))
