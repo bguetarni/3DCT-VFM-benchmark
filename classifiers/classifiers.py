@@ -52,7 +52,7 @@ class BaseClassifier(ABC):
         pass
 
 
-class MLP_head(nn.Module):
+class MLP_head(nn.Module, BaseClassifier):
     def __init__(self, n_dim, n_class=1, dropout=0.1):
         """"
         Args
@@ -67,8 +67,24 @@ class MLP_head(nn.Module):
             nn.Linear(4*n_dim, n_class),
         )
 
+    def save(self, path_):
+        torch.save(self.state_dict(), path_)
+
+    def load(self, path_):
+        self.load_state_dict(torch.load(path_))
+
+    def get_num_params(self):
+        get_n = lambda i: sum(p.numel() for p in i.parameters() if p.requires_grad)
+        return get_n(self.head)
+
     def forward(self, x):
+        if isinstance(x, dict):
+            x = list(chain.from_iterable([v.values() for v in x.values()]))[0]
+
         return self.head(x)
+
+    def __call__(self, input):
+        return self.forward(input)
 
 
 class Attention(nn.Module, BaseClassifier):
@@ -96,6 +112,7 @@ class Attention(nn.Module, BaseClassifier):
                 nn.Dropout(dropout),
             ),
             "ln": nn.LayerNorm(n_dim),
+            "dropout": nn.Dropout(dropout),
             "head": MLP_head(n_dim, n_class, dropout),
         })
 
@@ -122,7 +139,7 @@ class Attention(nn.Module, BaseClassifier):
             out (tensor) output logits
         """
 
-        B = list(x["image"][0].values())[0].shape[0]  # batch size
+        B = list(x["image"].values())[0].shape[0]  # batch size
 
         # project and stack modalities features
         proj = self.layers["proj"]
@@ -141,13 +158,17 @@ class Attention(nn.Module, BaseClassifier):
         for _ in range(self.n_layer):
             # intra-modality fusion
             for m in x.keys():
-                if m != "clinical": # no intra-modality attention for clinical modality
+                if m == "image": # no intra-modality attention for clinical modality
                     attn_scores = torch.matmul(q_mi[m].unsqueeze(dim=-2), x[m].transpose(-2, -1)) / (self.n_dim ** 0.5)  # (B, 1, n_feat)
                     attn_scores = F.softmax(attn_scores, dim=-1)
                     q_mi[m] = torch.matmul(attn_scores, x[m]).squeeze(dim=-2)  # (B, n_dim)
                 
-                # propagate modality query into feature vectors
-                x[m] = self.lambda_ * x[m] + (1 - self.lambda_) * q_mi[m].unsqueeze(dim=-2).repeat(1, x[m].shape[1], 1)
+                    # propagate modality query into feature vectors
+                    x[m] = self.lambda_ * x[m] + (1 - self.lambda_) * q_mi[m].unsqueeze(dim=-2).repeat(1, x[m].shape[1], 1)
+                else:
+                    # propagate modality query into feature vectors
+                    x[m] = self.lambda_ * x[m] + (1 - self.lambda_) * q_mi[m]
+                
                 x[m] = self.layers["ln"](self.layers["dropout"](x[m]))   # dropout and layer norm
                 
                 # FFN

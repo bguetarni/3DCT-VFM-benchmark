@@ -19,8 +19,8 @@ from dataloader import recurrence_2y_name, recurrence_5y_name, CATEGORICAL_CLINI
 from classifiers.classifiers import Attention, Linear, Concat, MLP_head, Normalizer
 
 def one_hot_encode(value, max_value):
-    one_hot = np.zeros(max_value + 1)
-    one_hot[value] = 1
+    one_hot = np.zeros(int(max_value) + 1)
+    one_hot[int(value)] = 1
     return one_hot
 
 
@@ -68,28 +68,31 @@ class DataLoader:
 
     def prepare_data(self, exp_params, task):
         """
+        remove patients with missing data or invalid label
         prepare data for training according to experiment parameters and task
         keep only modalities and imaging features defined in exp_params
-        remove patients with missing data or invalid label
         """
 
         # select only imaging features defined in exp_params
-        self.X = self.X[(self.X["modality"] != "image") | (self.X["modality"] == "image" & self.X["features"].isin(exp_params["extractors"]))]
+        self.X = self.X[(self.X["modality"] != "image") | ((self.X["modality"] == "image") & (self.X["features"].isin(exp_params["extractors"])))]
 
         # one hot encode categorical clinical variables
         X_clinical = self.X[self.X["modality"] == "clinical"]
         df = []
         for _, row in X_clinical.iterrows():
-            if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
-                max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
-                if max_value > 1:
-                    one_hot = one_hot_encode(int(row["value"]), max_value)
-                    for i, v in enumerate(one_hot):
-                        df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
+            try:
+                if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
+                    max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
+                    if max_value > 1:
+                        one_hot = one_hot_encode(row["value"], max_value)
+                        for i, v in enumerate(one_hot):
+                            df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
+                    else:
+                        df.append(row.to_dict())
                 else:
                     df.append(row.to_dict())
-            else:
-                df.append(row.to_dict())
+            except (TypeError, ValueError):
+                continue
         
         X_clinical = pandas.DataFrame(df)
         X_image = self.X[self.X["modality"] != "clinical"]
@@ -111,10 +114,14 @@ class DataLoader:
             raise ValueError(f"task {task} not valid. Valid ones are [{recurrence_2y_name}, {recurrence_5y_name}]")
         self.Y = self.Y[["center", task]].rename(columns={task: "label"})
 
-        # remove patients with invalid label or missing data
+        # remove patients with invalid label, missing data or uncommon between X and Y
         invalid_label_patients = self.Y[self.Y["label"].isna()].index
         missing_data_patients = self.X[self.X.isna().any(axis=1)].index
-        remove_indices = [*invalid_label_patients, *missing_data_patients]
+        uncommon_patients = [
+            *[p for p in self.X.index if not(p in self.Y.index)],
+            *[p for p in self.Y.index if not(p in self.X.index)]
+        ]
+        remove_indices = [*invalid_label_patients, *missing_data_patients, *uncommon_patients]
         self.X = self.X.drop(index=remove_indices, errors="ignore")
         self.Y = self.Y.drop(index=remove_indices, errors="ignore")
 
@@ -149,21 +156,22 @@ class DataLoader:
 
         # stratified kfold split to ensure similar label distribution across folds
         skf = StratifiedKFold(n_splits=kfold, shuffle=True)
-        for train_index, test_index in skf.split(sample_idx, sample_target):
-            X_train_val = self.X.loc[self.X.index.isin(sample_idx[train_index])]
-            Y_train_val = self.Y.loc[X_train_val.index]
+        for train_idx, test_idx in skf.split(sample_idx, sample_target):
+            X_train_val = self.X.loc[sample_idx[train_idx]]
+            Y_train_val = self.Y.loc[sample_idx[train_idx]]
 
-            X_test = self.X.loc[self.X.index.isin(sample_idx[test_index])]
-            Y_test = self.Y.loc[X_test.index]
+            X_test = self.X.loc[sample_idx[test_idx]]
+            Y_test = self.Y.loc[sample_idx[test_idx]]
 
             # further split train into train and validation
             sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
-            train_idx, val_idx = next(sss.split(Y_train_val.index, Y_train_val["label"].values))
-            X_train = X_train_val.loc[X_train_val.index.isin(train_idx)]
-            Y_train = Y_train_val.loc[X_train.index]
+            trainval_sample_idx = np.array(Y_train_val.index)
+            train_idx, val_idx = next(sss.split(trainval_sample_idx, Y_train_val["label"].values))
+            X_train = X_train_val.loc[trainval_sample_idx[train_idx]]
+            Y_train = Y_train_val.loc[trainval_sample_idx[train_idx]]
 
-            X_valid = X_train_val.loc[X_train_val.index.isin(val_idx)]
-            Y_valid = Y_train_val.loc[X_valid.index]
+            X_valid = X_train_val.loc[trainval_sample_idx[val_idx]]
+            Y_valid = Y_train_val.loc[trainval_sample_idx[val_idx]]
 
             yield (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test)
 
@@ -217,12 +225,13 @@ class DataLoader:
             x = self.X.loc[indices]
             y = self.Y.loc[indices]
 
-            x = {}
+            x_ = {}
             for m in x.columns.get_level_values("modality").unique():
                 if m == "image":
-                    x.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
+                    x_.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
                 else:
-                    x.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
+                    x_.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
+            x = x_
             
             y = torch.tensor(y["label"].values)
 
@@ -368,9 +377,9 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
         X_test.loc[:, ["image"]] = norm.transform(X_test.loc[:, ["image"]])
         normalizer.update({k: norm.get_params()})
 
-        train_loader = DataLoader(X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"], class_weights=exp_params["class_weights"])
-        valid_loader = DataLoader(X=X_valid, Y=Y_valid)
-        test_loader = DataLoader(X=X_test, Y=Y_test)
+        train_loader = DataLoader(base_path=None, name=None, X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"], class_weights=exp_params["class_weights"])
+        valid_loader = DataLoader(base_path=None, name=None, X=X_valid, Y=Y_valid)
+        test_loader = DataLoader(base_path=None, name=None, X=X_test, Y=Y_test)
 
         if exp_params["undersampling"]:
             print("applying undersampling to training data")
