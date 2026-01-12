@@ -372,10 +372,23 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
         # apply normalization function column-wise to image features
         print("normalizing features values..")
         norm = Normalizer(args.normalizer)
-        X_train.loc[:, ["image"]] = norm.fit_transform(X_train.loc[:, ["image"]])
-        X_valid.loc[:, ["image"]] = norm.transform(X_valid.loc[:, ["image"]])
-        X_test.loc[:, ["image"]] = norm.transform(X_test.loc[:, ["image"]])
-        normalizer.update({k: norm.get_params()})
+        if "image" in X_train.columns.get_level_values("modality"):
+            X_train.loc[:, ["image"]] = norm.fit_transform(X_train.loc[:, ["image"]])
+            X_valid.loc[:, ["image"]] = norm.transform(X_valid.loc[:, ["image"]])
+            X_test.loc[:, ["image"]] = norm.transform(X_test.loc[:, ["image"]])
+            normalizer.update({k: norm.get_params()})
+
+        # normalize age
+        if "age" in X_train.columns.get_level_values("features"):
+            X_train.loc[:, ("clinical", "age")] = X_train.loc[:, ("clinical", "age")].values / 100.
+            X_valid.loc[:, ("clinical", "age")] = X_valid.loc[:, ("clinical", "age")].values / 100.
+            X_test.loc[:, ("clinical", "age")] = X_test.loc[:, ("clinical", "age")].values / 100.
+
+        # normalize dose
+        if "dose" in X_train.columns.get_level_values("features"):
+            X_train.loc[:, ("clinical", "dose")] = X_train.loc[:, ("clinical", "dose")].values / 70.
+            X_valid.loc[:, ("clinical", "dose")] = X_valid.loc[:, ("clinical", "dose")].values / 70.
+            X_test.loc[:, ("clinical", "dose")] = X_test.loc[:, ("clinical", "dose")].values / 70.
 
         train_loader = DataLoader(base_path=None, name=None, X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"], class_weights=exp_params["class_weights"])
         valid_loader = DataLoader(base_path=None, name=None, X=X_valid, Y=Y_valid)

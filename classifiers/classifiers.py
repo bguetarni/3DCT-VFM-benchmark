@@ -5,6 +5,15 @@ from torch import nn
 import torch.nn.functional as F
 import sklearn
 
+def unfold_dict_tensor(d):
+    tensors = []
+    for v in d.values():
+        if isinstance(v, dict):
+            tensors.extend(unfold_dict_tensor(v))
+        else:
+            tensors.append(v)
+    return tensors
+
 class Normalizer:
     def __init__(self, method=None):
         match method:
@@ -79,7 +88,7 @@ class MLP_head(nn.Module, BaseClassifier):
 
     def forward(self, x):
         if isinstance(x, dict):
-            x = list(chain.from_iterable([v.values() for v in x.values()]))[0]
+            x = unfold_dict_tensor(x)[0]
 
         return self.head(x)
 
@@ -255,7 +264,7 @@ class Linear(nn.Module, BaseClassifier):
             x (torch.Tensor, dict) input tensor
         """
         if isinstance(x, dict):
-            x = list(chain.from_iterable([v.values() for v in x.values()]))[0]
+            x = unfold_dict_tensor(x)[0]
         
         out = self.head(x)  # (B, n_class)
         return out
