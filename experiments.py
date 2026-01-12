@@ -243,7 +243,7 @@ class DataLoader:
             yield x, y, cw
         return StopIteration
    
-    def undersampling(self, per_center=True):
+    def undersampling(self, per_center=False):
         if per_center:
             idx = []
             for center in self.Y["center"].unique():
