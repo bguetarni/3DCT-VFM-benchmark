@@ -23,6 +23,63 @@ def one_hot_encode(value, max_value):
     one_hot[int(value)] = 1
     return one_hot
 
+class MultiCenterStratifiedKFold:
+    def __init__(self, Y):
+        self.Y = Y
+
+    def split(self, kfold=None, train_val_split=0.6, per_center=False):
+        """
+        Split data with stratified k-fold
+
+        kfold (int) number of folds
+        train_val_split (float) train/validation data factor for training, the rest is for validation
+        per_center (bool) wether to split data seaparatly according to center
+        """
+
+        if kfold is None:
+            # if (all centers) size > 500 k=5 else k=3
+            sizes = np.array([len(self.Y[self.Y["center"] == c]) for c in self.Y["center"].unique()])
+            kfold = 5 if np.all(sizes >= 500) else 3
+
+        if per_center:
+            # define indices and labels
+            sample_idx = {c: np.array(self.Y[self.Y["center"] == c].index) for c in self.Y["center"].unique()}
+            sample_labels = {c: self.Y[self.Y["center"] == c]["label"].values for c in self.Y["center"].unique()}
+
+            # stratified kfold split to ensure similar label distribution across folds
+            skf = {c: StratifiedKFold(n_splits=kfold, shuffle=True).split(sample_idx[c], sample_labels[c]) for c in self.Y["center"].unique()}
+
+            for _ in range(kfold):
+                train_idx = {}
+                val_idx = {}
+                test_idx = {}
+                for c, skfold in skf.items():
+                    train_idx_center, test_idx_center = next(skfold)
+                    sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
+                    train_idx_center_, val_idx_center_ = next(sss.split(sample_idx[c][train_idx_center], sample_labels[c][sample_idx[train_idx_center]]["label"]))
+                    train_idx.update({c: sample_idx[c][train_idx_center][train_idx_center_]})
+                    val_idx.update({c: sample_idx[c][train_idx_center][val_idx_center_]})
+                    test_idx.update({c: sample_idx[c][test_idx_center]})
+                
+                # concatenate indices from different centers
+                train_idx = np.concatenate(train_idx.values())
+                val_idx = np.concatenate(val_idx.values())
+                test_idx = np.concatenate(test_idx.values())
+                yield train_idx, val_idx, test_idx
+            return StopIteration
+        else:
+            # define indices
+            sample_idx = np.array(self.Y.index)
+
+            # stratified kfold split to ensure similar label distribution across folds
+            skf = StratifiedKFold(n_splits=kfold, shuffle=True)
+
+            for train_idx, test_idx in skf.split(sample_idx, self.Y["label"].values):
+                sss = StratifiedShuffleSplit(n_splits=1, train_size=self.train_val_split)
+                train_idx_, val_idx_ = next(sss.split(sample_idx[train_idx], self.Y.loc[sample_idx[train_idx]]["label"].values))
+                yield sample_idx[train_idx][train_idx_], sample_idx[train_idx][val_idx_], sample_idx[test_idx]
+            return StopIteration
+
 
 class DataLoader:
     def __init__(self, base_path, name, X=None, Y=None, uniform_sampling=False, class_weights=False):
@@ -142,38 +199,20 @@ class DataLoader:
         cw = (cw - cw.mean()) + 1   # center values around 1
         return cw
 
-    def split(self, kfold, train_val_split=0.6):
+    def split(self, kfold=None, train_val_split=0.6, per_center=False):
         """
         split data into kfold train/validation/test sets
         
         kfold (int) number of folds
         train_val_split (float) proportion of training data used for training (rest for validation)
+        per_center (bool) wether to split data seaparatly according to center
         """
 
-        # define indices and target for stratification
-        sample_idx = np.array(self.Y.index)
-        sample_target = self.Y["label"].values
-
-        # stratified kfold split to ensure similar label distribution across folds
-        skf = StratifiedKFold(n_splits=kfold, shuffle=True)
-        for train_idx, test_idx in skf.split(sample_idx, sample_target):
-            X_train_val = self.X.loc[sample_idx[train_idx]]
-            Y_train_val = self.Y.loc[sample_idx[train_idx]]
-
-            X_test = self.X.loc[sample_idx[test_idx]]
-            Y_test = self.Y.loc[sample_idx[test_idx]]
-
-            # further split train into train and validation
-            sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
-            trainval_sample_idx = np.array(Y_train_val.index)
-            train_idx, val_idx = next(sss.split(trainval_sample_idx, Y_train_val["label"].values))
-            X_train = X_train_val.loc[trainval_sample_idx[train_idx]]
-            Y_train = Y_train_val.loc[trainval_sample_idx[train_idx]]
-
-            X_valid = X_train_val.loc[trainval_sample_idx[val_idx]]
-            Y_valid = Y_train_val.loc[trainval_sample_idx[val_idx]]
-
-            yield (X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test)
+        splitter = MultiCenterStratifiedKFold(self.Y)
+        for train_idx, val_idx, test_idx in splitter.split(kfold, train_val_split, per_center):
+            # (train data), (val data), (test data)
+            yield (self.X.loc[train_idx], self.Y.loc[train_idx]), (self.X.loc[val_idx], self.Y.loc[val_idx]), (self.X.loc[test_idx], self.Y.loc[test_idx])
+        return StopIteration
 
     def get_random_batch(self, n, sample_weight=False):
         """

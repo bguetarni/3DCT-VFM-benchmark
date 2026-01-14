@@ -9,6 +9,8 @@ import pydicom
 import pandas
 import datetime
 import numpy as np
+import SimpleITK as sitk
+import scipy
 from monai.transforms import Flip, SpatialCrop
 
 import dicom_class
@@ -271,8 +273,49 @@ class ARTIX(BaseLoader):
 class HECKTOR(BaseLoader):
     def __init__(self, path):
         super().__init__(path)
-        self.CLINICAL_MAPPING = {} #TODO
         self.center_map = {1: 'CHUM', 2: 'CHUP', 3: 'CHUS', 6: 'HGJ', 7: 'HMR', 5: 'MDA', 8: 'USZ'}
+
+        self.clinical_key_mapping = {
+            "Gender": "sex",
+            "Performance Status": "ecog",
+            "Tobacco Consumption": "smoking",
+            # "Alcohol Consumption": "alcohol",
+            "M-stage": "metastasis",
+            "HPV Status": "hpv",
+            "Treatment": "treatment",
+            "Age": "age",
+            "dose": "dose",
+        }
+
+        self.clinical_encoding = {
+            "Gender": {0: 0, 1: 1}, # 0 = female / 1 = male
+
+            "Performance Status": {"ECOG 0": 0, "ECOG 1": 0, "ECOG 2": 1, "ECOG 3": 2, "ECOG 4": 3},
+
+            "Tobacco Consumption": {"Yes": 1, "No": 0},
+
+            # "Alcohol Consumption": {"No": 0, "Yes": 1},
+
+            "M-stage": {"M0": 0, "M1": 1},
+
+            "HPV Status": {"Positive": 1, "Negative": 0},
+
+            "Treatment": {"RT+CH": 1, "RT": 0},
+        }
+
+    def get_avg_dose_scipy(self, ct, mask, dose):
+        dose_img = sitk.DICOMOrient(sitk.ReadImage(dose), 'RAS')
+        mask_img = sitk.DICOMOrient(sitk.ReadImage(mask), 'RAS')
+        ct_img = sitk.DICOMOrient(sitk.ReadImage(ct), 'RAS')
+
+        moving_shape = np.array(sitk.GetArrayFromImage(dose_img).shape)
+        reference_shape = np.array(sitk.GetArrayFromImage(ct_img).shape)
+        zoom = reference_shape / moving_shape
+        resample_img = scipy.ndimage.zoom(input=sitk.GetArrayFromImage(dose_img), zoom=zoom, mode="nearest")
+
+        mask_bool = sitk.GetArrayFromImage(mask_img)
+        gtv_dose = resample_img[mask_bool == 1].flatten()
+        return gtv_dose.mean()
 
     def build_patients(self, log=None):
         data = {}
@@ -286,22 +329,35 @@ class HECKTOR(BaseLoader):
             id = os.path.split(p)[1]
 
             try:
-                ct = dicom_class.CT(glob.glob(os.path.join(p, "*_CT.nii.gz"))[0])
+                ct = dicom_class.CT(glob.glob(os.path.join(p, "*CT*"))[0])
             except IndexError:
                 if log: log.warning(f"WARNING: no CT found for patient {id}")
                 ct = None
 
             try:
-                dose = dicom_class.CT(glob.glob(os.path.join(p, "*_RTDOSE.nii.gz"))[0])
-                if ct:
-                    ct.add_rtdose(dose)
+                dose = dicom_class.CT(glob.glob(os.path.join(p, "*RTDOSE*"))[0])
+                if ct: ct.add_rtdose(dose)
             except IndexError:
                 if log: log.warning(f"WARNING: no RTDOSE found for patient {id}")
-                pass
+                dose = None
+
+            # calculate GTV dose
+            ct = os.path.join(self.path, "Task 1", id, f"{id}__CT.nii.gz")
+            mask = os.path.join(self.path, "Task 1", id, f"{id}.nii.gz")
+            dose = os.path.join(self.path, "Task 2", id, f"{id}__RTDOSE.nii.gz")
+            if os.path.exists(ct) and os.path.exists(mask) and os.path.exists(dose):
+                try:
+                    dose = int(self.get_avg_dose_scipy(ct, mask, dose))
+                    if dose < 30: dose = None
+                except IndexError:
+                    dose = None
+            else:
+                dose = None
 
             df = pandas.read_csv(os.path.join(self.path, "Task 2", "HECKTOR_2025_Training_Task_2.csv"))
             clinical = df[df["PatientID"] == str(id)].to_dict(orient="records")[0]
             clinical["CenterID"] = self.center_map[clinical["CenterID"]]
+            clinical.update({"dose": dose})
 
             p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
             data.update({p.id: p})
@@ -315,7 +371,7 @@ class HECKTOR(BaseLoader):
             id = os.path.split(p)[1]
 
             try:
-                ct = dicom_class.CT(glob.glob(os.path.join(p, "*_CT.nii.gz"))[0])
+                ct = dicom_class.CT(glob.glob(os.path.join(p, "*CT*"))[0])
                 if log: log.warning(f"WARNING: no CT found for patient {id}")
             except IndexError:
                 ct = None
@@ -387,6 +443,22 @@ class HECKTOR(BaseLoader):
             center = p.clinical["CenterID"]
             center = self.center_map[center] if center in self.center_map.keys() else center
             label.append({"patient": id_, "center": center, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+
+            # build clinical features
+            for k, v in p.clinical.items():
+                if k in self.clinical_key_mapping.keys():
+                    if k in self.clinical_encoding.keys(): # categorical feature
+                        try:
+                            v = self.clinical_encoding[k][v]
+                        except KeyError:
+                            v = None
+                    else: # numerical feature
+                        try:
+                            v = float(v)
+                        except ValueError:
+                            v = None
+                    clinical.append({"patient": id_, "modality": "clinical", "features": self.clinical_key_mapping[k], "name": 0, "value": v})
+
         label = pandas.DataFrame(label)
 
         return features, label
@@ -394,6 +466,7 @@ class HECKTOR(BaseLoader):
     def get_spatial_transforms():
         tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,100,0), roi_end=(500,500,300)),]
         return tr
+
 
 class TCIA(BaseLoader):
     def __init__(self, path):
@@ -526,6 +599,7 @@ class HeadNeckCTAtlas(TCIA):
         tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,50,0), roi_end=(512,512,350)),]
         return tr
 
+
 class HeadNeckPETCT(TCIA):
     def __init__(self, path):
         super().__init__(path)
@@ -613,6 +687,7 @@ class HeadNeckPETCT(TCIA):
         tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,100,0), roi_end=(512,512,350)),]
         return tr
 
+
 class HNSCC3DCTRT(TCIA):
     def __init__(self, path):
         super().__init__(path)
@@ -643,6 +718,7 @@ class HNSCC3DCTRT(TCIA):
         clinical = clinical[clinical["HN_P"].astype(int) == int(re.findall("\d+", patient_id)[0])].to_dict('records')
         if clinical: return clinical[0]
         else: return {}
+
 
 class OropharyngealRadiomicsOutcomes(TCIA):
     def __init__(self, path):
@@ -724,6 +800,7 @@ class OropharyngealRadiomicsOutcomes(TCIA):
     def get_spatial_transforms():
         tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]
         return tr
+
 
 class QINHEADNECK(TCIA):
     def __init__(self, path):
@@ -818,6 +895,7 @@ class QINHEADNECK(TCIA):
     def get_spatial_transforms():
         tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]
         return tr
+
 
 class RADCURE(TCIA):
     def __init__(self, path):
