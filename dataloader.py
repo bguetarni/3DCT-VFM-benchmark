@@ -456,7 +456,7 @@ class HECKTOR(BaseLoader):
                     else: # numerical feature
                         try:
                             v = float(v)
-                        except ValueError:
+                        except (ValueError, TypeError):
                             v = None
                     clinical.append({"patient": id_, "modality": "clinical", "features": self.clinical_key_mapping[k], "name": 0, "value": v})
 

@@ -44,10 +44,10 @@ class MultiCenterStratifiedKFold:
         if per_center:
             # define indices and labels
             sample_idx = {c: np.array(self.Y[self.Y["center"] == c].index) for c in self.Y["center"].unique()}
-            sample_labels = {c: self.Y[self.Y["center"] == c]["label"].values for c in self.Y["center"].unique()}
+            sample_labels = {c: self.Y[self.Y["center"] == c]["label"] for c in self.Y["center"].unique()}
 
             # stratified kfold split to ensure similar label distribution across folds
-            skf = {c: StratifiedKFold(n_splits=kfold, shuffle=True).split(sample_idx[c], sample_labels[c]) for c in self.Y["center"].unique()}
+            skf = {c: StratifiedKFold(n_splits=kfold, shuffle=True).split(sample_idx[c], sample_labels[c].values) for c in self.Y["center"].unique()}
 
             for _ in range(kfold):
                 train_idx = {}
@@ -56,15 +56,15 @@ class MultiCenterStratifiedKFold:
                 for c, skfold in skf.items():
                     train_idx_center, test_idx_center = next(skfold)
                     sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
-                    train_idx_center_, val_idx_center_ = next(sss.split(sample_idx[c][train_idx_center], sample_labels[c][sample_idx[train_idx_center]]["label"]))
+                    train_idx_center_, val_idx_center_ = next(sss.split(sample_idx[c][train_idx_center], sample_labels[c].loc[sample_idx[c][train_idx_center]]))
                     train_idx.update({c: sample_idx[c][train_idx_center][train_idx_center_]})
                     val_idx.update({c: sample_idx[c][train_idx_center][val_idx_center_]})
                     test_idx.update({c: sample_idx[c][test_idx_center]})
                 
                 # concatenate indices from different centers
-                train_idx = np.concatenate(train_idx.values())
-                val_idx = np.concatenate(val_idx.values())
-                test_idx = np.concatenate(test_idx.values())
+                train_idx = np.concatenate(list(train_idx.values()))
+                val_idx = np.concatenate(list(val_idx.values()))
+                test_idx = np.concatenate(list(test_idx.values()))
                 yield train_idx, val_idx, test_idx
             return StopIteration
         else:
