@@ -390,7 +390,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
     test_metrics = []
     best_state_dict = {}
     normalizer = {}
-    for k, (tain_data, valid_data, test_data) in enumerate(data_loader.split(kfold, train_val_split=args.train_split)):
+    for k, (tain_data, valid_data, test_data) in enumerate(data_loader.split(kfold, train_val_split=args.train_split, per_center=True)):
         print(f"kfold {k+1}/{kfold}")
         X_train, Y_train = tain_data
         X_valid, Y_valid = valid_data
@@ -435,7 +435,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
 
         if exp_params["undersampling"]:
             print("applying undersampling to training data")
-            train_loader.undersampling()
+            train_loader.undersampling(per_center=True)
 
         print("training data stat:")
         print(display_split_stats(train_loader))

@@ -432,6 +432,7 @@ class HECKTOR(BaseLoader):
 
         # build labels
         label = []
+        clinical = []
         for id_, p in patients.items():
             try:
                 rfs = p.clinical["RFS"]
@@ -460,7 +461,7 @@ class HECKTOR(BaseLoader):
                     clinical.append({"patient": id_, "modality": "clinical", "features": self.clinical_key_mapping[k], "name": 0, "value": v})
 
         label = pandas.DataFrame(label)
-
+        features = pandas.concat([features, pandas.DataFrame(clinical)])
         return features, label
 
     def get_spatial_transforms():
