@@ -75,7 +75,7 @@ class MultiCenterStratifiedKFold:
             skf = StratifiedKFold(n_splits=kfold, shuffle=True)
 
             for train_idx, test_idx in skf.split(sample_idx, self.Y["label"].values):
-                sss = StratifiedShuffleSplit(n_splits=1, train_size=self.train_val_split)
+                sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
                 train_idx_, val_idx_ = next(sss.split(sample_idx[train_idx], self.Y.loc[sample_idx[train_idx]]["label"].values))
                 yield sample_idx[train_idx][train_idx_], sample_idx[train_idx][val_idx_], sample_idx[test_idx]
             return StopIteration
@@ -390,7 +390,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
     test_metrics = []
     best_state_dict = {}
     normalizer = {}
-    for k, (tain_data, valid_data, test_data) in enumerate(data_loader.split(kfold, train_val_split=args.train_split, per_center=True)):
+    for k, (tain_data, valid_data, test_data) in enumerate(data_loader.split(kfold, train_val_split=args.train_split, per_center=False)):
         print(f"kfold {k+1}/{kfold}")
         X_train, Y_train = tain_data
         X_valid, Y_valid = valid_data

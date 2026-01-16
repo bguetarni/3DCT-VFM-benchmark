@@ -277,8 +277,8 @@ class HECKTOR(BaseLoader):
 
         self.clinical_key_mapping = {
             "Gender": "sex",
-            "Performance Status": "ecog",
-            "Tobacco Consumption": "smoking",
+            # "Performance Status": "ecog",
+            # "Tobacco Consumption": "smoking",
             # "Alcohol Consumption": "alcohol",
             "M-stage": "metastasis",
             "HPV Status": "hpv",
@@ -290,17 +290,9 @@ class HECKTOR(BaseLoader):
         self.clinical_encoding = {
             "Gender": {0: 0, 1: 1}, # 0 = female / 1 = male
 
-            "Performance Status": {"ECOG 0": 0, "ECOG 1": 0, "ECOG 2": 1, "ECOG 3": 2, "ECOG 4": 3},
-
-            "Tobacco Consumption": {"Yes": 1, "No": 0},
-
-            # "Alcohol Consumption": {"No": 0, "Yes": 1},
+            "Performance Status": {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 80: 1, 90: 0, 100: 0},
 
             "M-stage": {"M0": 0, "M1": 1},
-
-            "HPV Status": {"Positive": 1, "Negative": 0},
-
-            "Treatment": {"RT+CH": 1, "RT": 0},
         }
 
     def get_avg_dose_scipy(self, ct, mask, dose):
@@ -424,8 +416,10 @@ class HECKTOR(BaseLoader):
         # concatenate features and modalities
         features = []
         for file_ in base_path.joinpath("features", "hecktor").iterdir():
+            if file_.name.startswith("llm"):
+                continue
             fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
+            fts["modality"] = "image"
             fts["features"] = file_.stem
             features.append(fts)        
         features = pandas.concat(features)
