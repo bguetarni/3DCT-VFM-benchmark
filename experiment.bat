@@ -14,7 +14,7 @@ set DATASET=radcure
 
 :: linear classifier
 set BISZE=32
-set LR=1e-3
+set LR=1e-4
 set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors ct-fm --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --gpu 0"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors suprem --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --gpu 0"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors vista3d --classifier linear --normalizer scale --lr %LR% --bsize %BISZE% --gpu 0"
@@ -23,7 +23,7 @@ start cmd /k "%CMD%"
 
 :: ffn classifier
 set BISZE=32
-set LR=1e-3
+set LR=1e-4
 set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors ct-fm --classifier ffn --normalizer scale --lr %LR% --bsize %BISZE% --gpu 3"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors suprem --classifier ffn --normalizer scale --lr %LR% --bsize %BISZE% --gpu 3"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality image --extractors vista3d --classifier ffn --normalizer scale --lr %LR% --bsize %BISZE% --gpu 3"
@@ -32,7 +32,7 @@ start cmd /k "%CMD%"
 
 :: concat classifier
 set BISZE=32
-set LR=1e-3
+set LR=1e-4
 set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors ct-fm --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --gpu 1"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors suprem --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --gpu 1"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors vista3d --classifier concat --normalizer scale --lr %LR% --bsize %BISZE% --gpu 1"
@@ -41,7 +41,7 @@ start cmd /k "%CMD%"
 
 :: attention classifier
 set BISZE=32
-set LR=1e-3
+set LR=1e-4
 set "CMD=python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors ct-fm --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --gpu 2"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors suprem --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --gpu 2"
 set "CMD=%CMD% & python experiments.py --task %TASK% --output %OUTPUT% --dataset %DATASET% --epoch %EPOCHS% --kfold %KFOLD% --train_split %TRAIN_SIZE% --modality both --extractors vista3d --classifier attention --normalizer scale --lr %LR% --bsize %BISZE% --gpu 2"
