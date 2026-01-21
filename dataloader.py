@@ -88,7 +88,8 @@ class ARTIX(BaseLoader):
     # CT vs CBCT: (0008, 0070) Manufacturer of CBCT is 'ELEKTA'
     def __init__(self, path):
         super().__init__(path)
-        self.CLINICAL_MAPPING = {
+        self.clinical_key_mapping = {}
+        self.clinical_encoding = {
             # SEX
             "Male": 1,
             "Female": 2,
@@ -905,6 +906,8 @@ class RADCURE(TCIA):
             "Tx Modality": "treatment",
             "Age": "age",
             "Dose": "dose",
+            "Ds Site": "localisation",
+            "METASTASIS": "metastasis",
         }
 
         self.clinical_encoding = {
@@ -921,6 +924,30 @@ class RADCURE(TCIA):
             "HPV": {"Yes, Negative": 0, "Yes, positive": 1},
             
             "Tx Modality": {"RT alone": 0, "ChemoRT": 1, "ChemoRT ": 1, "Postop RT alone": 0},
+
+            "Ds Site": {
+                "Oropharynx": "oropharynx",
+                "Larynx": "larynx",
+                "Unknown": "unknown",
+                "Lip & Oral Cavity": "oral_cavity",
+                "Hypopharynx": "hypopharynx",
+                "Nasopharynx": "nasopharynx",
+                "nasal cavity": "nasal_cavity",
+                "Skin": "skin",
+                "Paranasal Sinus": "sinus",
+                "Sarcoma": "unknown",
+                "esophagus": "esophagus",
+                "Paraganglioma": "unknown",
+                "Esophagus": "esophagus",
+                "Nasal Cavity": "nasal_cavity",
+                "benign tumor": "unknown",
+                "Salivary Glands": "gland",
+                "Other": "unknown",
+                "Orbit": "orbit",
+                "Lacrimal gland": "gland"
+            },
+
+            "METASTASIS": {"M0": 0, "MX": None, "M1": 1},
         }
 
     def get_patient_clinical_data(self, patient_id):

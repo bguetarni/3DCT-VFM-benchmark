@@ -123,6 +123,27 @@ class DataLoader:
         self.X = x
         self.Y = y
 
+    def inclusion_criteria_clinical_features(self, row):
+        """
+        Return True if feature value corresponds to inclusion criteria, False otherwise
+        """
+
+        if row["value"] is None:
+            return False
+
+        match row["features"]:
+            case "dose":
+                return row["value"] > 64
+            case "metastasis":
+                return row["value"] == 0
+            case "localisation":
+                return row["value"] == "oropharynx"
+            case "treatment":
+                return row["value"] in (1,2)
+            case _:
+                # if variable not in inclusion criteria list, include it anyways
+                return True
+
     def prepare_data(self, exp_params, task):
         """
         remove patients with missing data or invalid label
@@ -137,19 +158,19 @@ class DataLoader:
         X_clinical = self.X[self.X["modality"] == "clinical"]
         df = []
         for _, row in X_clinical.iterrows():
-            try:
-                if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
-                    max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
-                    if max_value > 1:
-                        one_hot = one_hot_encode(row["value"], max_value)
-                        for i, v in enumerate(one_hot):
-                            df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
-                    else:
-                        df.append(row.to_dict())
+            if not(self.inclusion_criteria_clinical_features(row)):
+                continue
+            
+            if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
+                max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
+                if max_value > 1:
+                    one_hot = one_hot_encode(row["value"], max_value)
+                    for i, v in enumerate(one_hot):
+                        df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
                 else:
                     df.append(row.to_dict())
-            except (TypeError, ValueError):
-                continue
+            else:
+                df.append(row.to_dict())
         
         X_clinical = pandas.DataFrame(df)
         X_image = self.X[self.X["modality"] != "clinical"]
