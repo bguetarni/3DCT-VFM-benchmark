@@ -1,10 +1,11 @@
-from monai.transforms import MapTransform, CropForegroundd
+from monai.transforms import MapTransform, CropForegroundd, CenterSpatialCropd
 import numpy as np
 
 class BboxCropd(MapTransform):
     def __call__(self, data):
         if data["bbox"] is None:
-            return CropForegroundd(keys=["image"], source_key="image")(data)
+            data = CropForegroundd(keys=["image"], source_key="image")(data)
+            return CenterSpatialCropd(keys=["image"], roi_size=(100,100,30))(data)
         else:
             data["bbox"] = self.fit_bbox_size(data["bbox"])
             xmin, ymin, zmin = data["bbox"][0]
