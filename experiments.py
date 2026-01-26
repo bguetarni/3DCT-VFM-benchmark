@@ -161,16 +161,19 @@ class DataLoader:
             if not(self.inclusion_criteria_clinical_features(row)):
                 continue
             
-            if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
-                max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
-                if max_value > 1:
-                    one_hot = one_hot_encode(row["value"], max_value)
-                    for i, v in enumerate(one_hot):
-                        df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
+            try:
+                if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
+                    max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
+                    if max_value > 1:
+                        one_hot = one_hot_encode(row["value"], max_value)
+                        for i, v in enumerate(one_hot):
+                            df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
+                    else:
+                        df.append(row.to_dict())
                 else:
                     df.append(row.to_dict())
-            else:
-                df.append(row.to_dict())
+            except (ValueError, TypeError):
+                continue
         
         X_clinical = pandas.DataFrame(df)
         X_image = self.X[self.X["modality"] != "clinical"]
