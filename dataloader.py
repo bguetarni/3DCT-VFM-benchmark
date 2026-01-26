@@ -321,36 +321,34 @@ class HECKTOR(BaseLoader):
 
             id = os.path.split(p)[1]
 
-            try:
-                ct = dicom_class.CT(glob.glob(os.path.join(p, "*CT*"))[0])
-            except IndexError:
-                if log: log.warning(f"WARNING: no CT found for patient {id}")
-                ct = None
-
-            try:
-                dose = dicom_class.CT(glob.glob(os.path.join(p, "*RTDOSE*"))[0])
-                if ct: ct.add_rtdose(dose)
-            except IndexError:
-                if log: log.warning(f"WARNING: no RTDOSE found for patient {id}")
-                dose = None
-
             # calculate GTV dose
             ct = os.path.join(self.path, "Task 1", id, f"{id}__CT.nii.gz")
             mask = os.path.join(self.path, "Task 1", id, f"{id}.nii.gz")
-            dose = os.path.join(self.path, "Task 2", id, f"{id}__RTDOSE.nii.gz")
+            dose = os.path.join(p, f"{id}__RTDOSE.nii.gz")
             if os.path.exists(ct) and os.path.exists(mask) and os.path.exists(dose):
                 try:
-                    dose = int(self.get_avg_dose_scipy(ct, mask, dose))
-                    if dose < 30: dose = None
+                    dose_Gy = int(self.get_avg_dose_scipy(ct, mask, dose))
                 except IndexError:
-                    dose = None
+                    dose_Gy = None
             else:
-                dose = None
+                dose_Gy = None
+            
+            if os.path.exists(ct):
+                ct = dicom_class.CT(ct)
+            else:
+                if log: log.warning(f"WARNING: no CT found for patient {id}")
+                ct = None
+
+            if not(ct is None) and os.path.exists(dose):
+                ct.add_rtdose(dicom_class.RTDOSE(dose))
+
+            if not(ct is None) and os.path.exists(mask):
+                ct.add_rtstruct(dicom_class.RTSTRUCT(mask))
 
             df = pandas.read_csv(os.path.join(self.path, "Task 2", "HECKTOR_2025_Training_Task_2.csv"))
             clinical = df[df["PatientID"] == str(id)].to_dict(orient="records")[0]
             clinical["CenterID"] = self.center_map[clinical["CenterID"]]
-            clinical.update({"dose": dose})
+            clinical.update({"dose": dose_Gy})
 
             p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
             data.update({p.id: p})
@@ -363,10 +361,10 @@ class HECKTOR(BaseLoader):
 
             id = os.path.split(p)[1]
 
-            try:
+            ct = os.path.join(p, f"{id}__CT.nii.gz")
+            if os.path.exists(ct):
                 ct = dicom_class.CT(glob.glob(os.path.join(p, "*CT*"))[0])
-                if log: log.warning(f"WARNING: no CT found for patient {id}")
-            except IndexError:
+            else:
                 ct = None
 
             df = pandas.read_csv(os.path.join(self.path, "Task 3", "HECKTOR_2025_Training_Task_3.csv"))
@@ -374,7 +372,7 @@ class HECKTOR(BaseLoader):
             clinical["CenterID"] = self.center_map[clinical["CenterID"]]
 
             if id in data.keys():
-                if not(data[id].ct) and ct:
+                if data[id].ct is None and ct:
                     data[id].ct = ct
                 
                 data[id].clinical.update(clinical)
@@ -925,27 +923,7 @@ class RADCURE(TCIA):
             
             "Tx Modality": {"RT alone": 0, "ChemoRT": 1, "ChemoRT ": 1, "Postop RT alone": 0},
 
-            "Ds Site": {
-                "Oropharynx": "oropharynx",
-                "Larynx": "larynx",
-                "Unknown": "unknown",
-                "Lip & Oral Cavity": "oral_cavity",
-                "Hypopharynx": "hypopharynx",
-                "Nasopharynx": "nasopharynx",
-                "nasal cavity": "nasal_cavity",
-                "Skin": "skin",
-                "Paranasal Sinus": "sinus",
-                "Sarcoma": "unknown",
-                "esophagus": "esophagus",
-                "Paraganglioma": "unknown",
-                "Esophagus": "esophagus",
-                "Nasal Cavity": "nasal_cavity",
-                "benign tumor": "unknown",
-                "Salivary Glands": "gland",
-                "Other": "unknown",
-                "Orbit": "orbit",
-                "Lacrimal gland": "gland"
-            },
+            "Ds Site": {"Oropharynx": 0},
 
             "METASTASIS": {"M0": 0, "MX": None, "M1": 1},
         }
