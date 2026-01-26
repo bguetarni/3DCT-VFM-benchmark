@@ -19,7 +19,9 @@ import dicom_utils
 recurrence_2y_name = "R2y"
 recurrence_5y_name = "R5y"
 
-CATEGORICAL_CLINICAL_VARIABLES = ["sex", "ecog", "smoking", "stage", "hpv", "treatment"]
+CATEGORICAL_CLINICAL_VARIABLES = ["sex", "ecog", "smoking", "stage", 
+                                  "hpv", "treatment", "surgery", "localisation", 
+                                  "metastasis"]
 
 def convert2date(dt):
     return datetime.datetime.strptime(dt, "%d/%m/%Y").date()
@@ -53,15 +55,14 @@ class BaseLoader(ABC):
 
         data = []
         try:
-            if all([pydicom.misc.is_dicom(j) for j in glob.glob(os.path.join(path, "*"))]):
+            files = glob.glob(os.path.join(path, "*"))
+            if all(map(pydicom.misc.is_dicom, files)):
                 # it is DICOM folder
 
-                files = os.listdir(path)
-                
                 if len(files) == 0:
                     return []
                 
-                dcm = pydicom.dcmread(os.path.join(path, files[0]))
+                dcm = pydicom.dcmread(files[0])
                 type = dcm.get((0x0008, 0x0060)).value
                 if type == "CT":
                     if dicom_utils.is_CT(dcm, use_exposure_time=False):
@@ -89,21 +90,7 @@ class ARTIX(BaseLoader):
     def __init__(self, path):
         super().__init__(path)
         self.clinical_key_mapping = {}
-        self.clinical_encoding = {
-            # SEX
-            "Male": 1,
-            "Female": 2,
-
-            # CANCER STAGING
-            "Stage III": 3,
-            "Stage IVa": 4,
-            "Stage IVb": 4,
-
-            # ECOG
-            "Asympatomatic": 0,
-            "Completely ambulatory": 1,
-            "lower than 50% in bed": 2,
-        }
+        self.clinical_encoding = {}
 
     def build_patients(self, log=None):
         data = []
@@ -598,6 +585,37 @@ class HeadNeckPETCT(TCIA):
     def __init__(self, path):
         super().__init__(path)
 
+        self.clinical_key_mapping = {
+            "Sex": "sex",
+            "Age": "age",
+            "Primary Site": "localisation",
+            "M-stage": "metastasis",
+            "TNM group stage": "stage",
+            "HPV status": "hpv",
+            "Therapy": "treatment",
+            "Surgery": "surgery",
+        }
+
+        self.clinical_encoding = {
+            "Sex": {"M": 1, "F": 0, "m": 1},
+
+            "Primary Site": {"Oropharynx": 0},
+
+            "M-stage": {"M0": 0},
+
+            "TNM group stage": {"stage III": 3, "stage IIB": 2, "stage IVA": 4, "stage IV": 4, 
+                                "stage IVB": 4, "stage II": 2, "stage I": 1, "Stade II": 2, 
+                                "Stade III": 3, "Stade IVA": 4, "Stade I": 1, "Stade IVB": 4, 
+                                "Stage III": 3, "Stage IVA": 4, "Stage IIB": 2, "Stage II": 2, 
+                                "Stage IV": 4, "StageII": 2},
+            
+            "HPV status": {"-": 0, "+": 1},
+
+            "Therapy": {"chemo radiation": 1, "radiation": 0},
+
+            "Surgery": {"NO": 0, "YES": 1},
+        }
+
     def get_patient_clinical_data(self, patient_id):
         clinical = []
         for i in ("HGJ", "CHUS", "HMR", "CHUM"):
@@ -649,6 +667,7 @@ class HeadNeckPETCT(TCIA):
 
         # build labels
         label = []
+        clinical = []
         for id_, p in patients.items():
             diag_endrt_dt = p.clinical["Time – diagnosis to end treatment (days)"]
             diag_lr_dt = p.clinical["Time – diagnosis to LR (days)"]
@@ -674,6 +693,23 @@ class HeadNeckPETCT(TCIA):
                 r5y = None
 
             label.append({"patient": id_, "center": p.clinical['center'], recurrence_2y_name: r2y, recurrence_5y_name: r5y})
+
+            # build clinical features
+            for k, v in p.clinical.items():
+                if k in self.clinical_key_mapping.keys():
+                    if k in self.clinical_encoding.keys(): # categorical feature
+                        try:
+                            v = self.clinical_encoding[k][v]
+                        except KeyError:
+                            v = None
+                    else: # numerical feature
+                        try:
+                            v = float(v)
+                        except ValueError:
+                            v = None
+                    clinical.append({"patient": id_, "modality": "clinical", "features": self.clinical_key_mapping[k], "name": 0, "value": v})
+        
+        features = pandas.concat([features, pandas.DataFrame(clinical)])
         label = pandas.DataFrame(label)
         return features, label
 

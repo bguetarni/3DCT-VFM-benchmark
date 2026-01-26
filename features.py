@@ -13,7 +13,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True, help='path to folder containing cohorts PICKLE files')
     parser.add_argument('--output', type=str, required=True, help='path to folder to save features')
-    parser.add_argument('--overwrite', action="store_true", default=False, help='weither to overwrite features file if already existing')
+    parser.add_argument('--overwrite', action="store_true", default=False, help='whether to overwrite features file if already existing')
     parser.add_argument('--type', type=str, required=True, choices=["ct-fm", "suprem", "vista3d"], help="type of features")
     parser.add_argument('--cohort', type=str, required=True, choices=list(cohorts_map.keys()), 
                         help='which cohort to build (change for certain parts)')

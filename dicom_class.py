@@ -139,8 +139,8 @@ class DICOM(ABC):
             
     def get_acquisition_date(self):
         """
-        Return the date of acuqisition of the data
-        This should be sued to knwo when the image was acquired
+        Return the date of acquisition of the data
+        This should be used to know when the image was acquired
         """
 
         path = self.get_dcm_path()
@@ -191,6 +191,7 @@ class Imaging(DICOM):
         reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.path))
         img = reader.Execute()
         return img
+
 
 class CBCT(Imaging):
     def __init__(self, path):
@@ -307,10 +308,15 @@ class CT(Imaging):
                 bbox = None
             else:
                 try:
+                    # liadt all contours available in RTSTRUCT
                     seg = self.rtstruct.get_all_OARs()
+                    # calculate similarity between contours name and 'gtv'
                     pairs =  [(i, similar("gtv", i.lower().replace(" ", ""))) for i in seg if "gtv" in i.lower()]
+                    # select contour with name that most resemble 'gtv'
                     seg, _ = sorted(pairs, reverse=True, key=lambda i: i[1])[0]
+                    # get contours coordinates in pixel space
                     ctrs = self.rtstruct.get_contours(seg)
+                    # calculate bbox upper-left and lower-right coordinates
                     bbox = ctrs.min(axis=0), ctrs.max(axis=0)
                 except IndexError:
                     bbox = None
@@ -318,6 +324,7 @@ class CT(Imaging):
             if self.rtstruct is None:
                 bbox = None
             else:
+                # get GTV bbox coordinates based on segmentation mask
                 mask = np.array(nibabel.load(self.rtstruct).dataobj)
                 gtv = np.argwhere(mask == 1)
                 bbox = gtv.min(axis=0), gtv.max(axis=0)
@@ -325,6 +332,7 @@ class CT(Imaging):
             bbox = None
         
         return bbox
+
 
 class RTDOSE(DICOM):
     def __init__(self, path):

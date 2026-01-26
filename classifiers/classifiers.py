@@ -97,7 +97,7 @@ class MLP_head(nn.Module, BaseClassifier):
 
 
 class Attention(nn.Module, BaseClassifier):
-    def __init__(self, dims, n_dim, n_layer, lambda_, dropout=0.1, n_class=1, **args):
+    def __init__(self, dims, n_dim, n_layer, lambda_, dropout=0.5, n_class=1, **args):
         """"
         Args
             dims (dict) dict of dimension for each modality and features ({"m": {"f1": n1, "f2": n2}, ...}})
