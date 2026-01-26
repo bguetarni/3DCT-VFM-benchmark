@@ -1,11 +1,12 @@
 import torch
 from lighter_zoo import SegResEncoder
 from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, EnsureTyped, Orientationd, ScaleIntensityRanged
-from utils import BboxCropd
+from . import utils
 
 def infer(input, bbox, preprocess, model, device):
     with torch.no_grad():
         input_tensor = preprocess({"image": input, "bbox": bbox})
+        input_tensor = input_tensor["image"]
         input_tensor = input_tensor.unsqueeze(dim=0).to(device)
         output = model(input_tensor)[-1].cpu()
         avg_output = torch.nn.functional.adaptive_avg_pool3d(output, 1)
@@ -20,7 +21,7 @@ def load(device):
     # Preprocessing pipeline
     preprocess = Compose([
         LoadImaged(keys=["image"]),
-        BboxCropd(keys=["image"]),
+        utils.BboxCropd(keys=["image"]),
         EnsureChannelFirstd(keys=["image"]),
         EnsureTyped(keys=["image"]),
         Orientationd(keys=["image"], axcodes="SPL"),

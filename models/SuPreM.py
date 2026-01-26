@@ -1,8 +1,8 @@
 import os
 import torch
 from monai.networks.nets import SegResNet
-from monai.transforms import Compose, LoadImaged, ScaleIntensityRanged, ToTensord, CenterSpatialCropd, Flipd, SpatialCropd, AddChanneld, Orientationd, Spacingd
-from utils import BboxCropd
+from monai.transforms import Compose, LoadImaged, ScaleIntensityRanged, ToTensord, EnsureChannelFirstd, Orientationd, Spacingd
+from . import utils
 
 def infer(input, bbox, preprocess, model, device):
     with torch.no_grad():
@@ -20,8 +20,8 @@ def load(device, checkpoint=None):
     test_transforms = Compose(
         [
             LoadImaged(keys=["image"]),
-            BboxCropd(keys=["image"]),
-            AddChanneld(keys=["image"]),
+            utils.BboxCropd(keys=["image"]),
+            EnsureChannelFirstd(keys=["image"]),
             Orientationd(keys=["image"], axcodes="RAS"),
             Spacingd(
                 keys=["image"],

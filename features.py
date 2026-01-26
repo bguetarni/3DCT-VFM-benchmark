@@ -31,10 +31,11 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("using device ", device)
 
-    with open(os.path.join(args.input, f"{args.cohort}.pickle"), "rb") as f:
+    input_path = os.path.join(args.input, f"{args.cohort}.pickle")
+    with open(input_path, "rb") as f:
         print("loading patients...")
         patients = pickle.load(f)
-        print(f"found {len(patients)} patients in {args.input}")
+        print(f"found {len(patients)} patients in {input_path}")
 
     print(f"loading model {args.type}...")
     match args.type:

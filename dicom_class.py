@@ -325,7 +325,7 @@ class CT(Imaging):
                 bbox = None
             else:
                 # get GTV bbox coordinates based on segmentation mask
-                mask = np.array(nibabel.load(self.rtstruct).dataobj)
+                mask = np.array(nibabel.load(self.rtstruct.path).dataobj)
                 gtv = np.argwhere(mask == 1)
                 bbox = gtv.min(axis=0), gtv.max(axis=0)
         else:
