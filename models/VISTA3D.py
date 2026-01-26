@@ -324,7 +324,7 @@ def load(device, checkpoint=None, infer_yaml=None):
 
     # insert BboxCropd after LoadImaged (which is 0th)
     tr_ = list(infer_transforms.transforms)
-    tr_.insert(1, utils.BboxCropd(keys=["image"]))
+    tr_.insert(2, utils.BboxCropd(keys=["image"]))
     infer_transforms.transforms = ensure_tuple(tr_)
     
     return infer, infer_transforms, model

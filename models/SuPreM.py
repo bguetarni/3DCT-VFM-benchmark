@@ -20,8 +20,8 @@ def load(device, checkpoint=None):
     test_transforms = Compose(
         [
             LoadImaged(keys=["image"]),
-            utils.BboxCropd(keys=["image"]),
             EnsureChannelFirstd(keys=["image"]),
+            utils.BboxCropd(keys=["image"]),
             Orientationd(keys=["image"], axcodes="RAS"),
             Spacingd(
                 keys=["image"],
