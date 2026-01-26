@@ -1,14 +1,20 @@
 from abc import ABC
 import os
+import pathlib
 from datetime import datetime
 import numpy as np
 import SimpleITK as sitk
+from difflib import SequenceMatcher
 import pydicom
 import nibabel
 import dicom2nifti
 from totalsegmentator.python_api import totalsegmentator
 
 from dicom_utils import fill_vol_ctrs
+
+
+def similar(a, b):
+    return SequenceMatcher(None, a, b).ratio()
 
 
 class DICOM(ABC):
@@ -184,7 +190,6 @@ class Imaging(DICOM):
         reader = sitk.ImageSeriesReader()
         reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.path))
         img = reader.Execute()
-        img = sitk.DICOMOrient(img, 'LAS')
         return img
 
 class CBCT(Imaging):
@@ -246,7 +251,7 @@ class CT(Imaging):
             rtstruct (RTSTRUCT) object to add
             log (logging.Logger) logger for warning messages
         """
-        if not self.rtstruct is None and not log is None:
+        if not(self.rtstruct is None) and not(log is None):
             log.warning(f"WARNING: RTSTRUCT {self.rtstruct.path} of CT {self.path} is being replaced by {rtstruct.path}")
         self.rtstruct = rtstruct
         self.rtstruct.set_parent(self)
@@ -296,6 +301,30 @@ class CT(Imaging):
         else:
             nibabel.save(output, tmp_nii_output)
 
+    def get_GTV_bbox(self):
+        if self.get_dcm_path().endswith(".dcm") or self.get_dcm_path().endswith(".dicom"):
+            if self.rtstruct is None:
+                bbox = None
+            else:
+                try:
+                    seg = self.rtstruct.get_all_OARs()
+                    pairs =  [(i, similar("gtv", i.lower().replace(" ", ""))) for i in seg if "gtv" in i.lower()]
+                    seg, _ = sorted(pairs, reverse=True, key=lambda i: i[1])[0]
+                    ctrs = self.rtstruct.get_contours(seg)
+                    bbox = ctrs.min(axis=0), ctrs.max(axis=0)
+                except IndexError:
+                    bbox = None
+        elif self.get_dcm_path().endswith(".nii.gz"):   # HECKTOR
+            if self.rtstruct is None:
+                bbox = None
+            else:
+                mask = np.array(nibabel.load(self.rtstruct).dataobj)
+                gtv = np.argwhere(mask == 1)
+                bbox = gtv.min(axis=0), gtv.max(axis=0)
+        else:
+            bbox = None
+        
+        return bbox
 
 class RTDOSE(DICOM):
     def __init__(self, path):
@@ -372,6 +401,7 @@ class RTSTRUCT(DICOM):
 
         # gather structure coordinates
         try:
+            #  (x, y, z)
             roi_index = {roi.ROIName: roi.ROINumber for roi in dcm.StructureSetROISequence}[name]
             ctrsequence = {item.ReferencedROINumber: item for item in dcm.ROIContourSequence}[roi_index].ContourSequence
             contours = [np.array(ctr.ContourData).reshape(-1, 3) for ctr in ctrsequence] # (x,y,z)

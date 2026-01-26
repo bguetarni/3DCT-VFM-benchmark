@@ -1,11 +1,12 @@
 import os
 import torch
 from monai.networks.nets import SegResNet
-from monai.transforms import EnsureChannelFirstd, Compose, LoadImaged, ScaleIntensityRanged, ToTensord, CenterSpatialCropd, Flipd, SpatialCropd
+from monai.transforms import Compose, LoadImaged, ScaleIntensityRanged, ToTensord, CenterSpatialCropd, Flipd, SpatialCropd, AddChanneld, Orientationd, Spacingd
+from utils import BboxCropd
 
-def infer(input, preprocess, model, device):
+def infer(input, bbox, preprocess, model, device):
     with torch.no_grad():
-        input_tensor = preprocess({"image": input})
+        input_tensor = preprocess({"image": input, "bbox": bbox})
         input_tensor = input_tensor["image"]
         input_tensor = input_tensor.unsqueeze(dim=0).to(device)
         output = model.encode(input_tensor)[0].cpu()
@@ -19,23 +20,33 @@ def load(device, checkpoint=None):
     test_transforms = Compose(
         [
             LoadImaged(keys=["image"]),
-            EnsureChannelFirstd(keys=["image"], channel_dim="no_channel"),
-            ScaleIntensityRanged(keys=["image"], a_min=-175, a_max=250, b_min=0.0, b_max=1.0, clip=True,),
-            Flipd(keys=["image"], spatial_axis=-1),
-            SpatialCropd(keys=["image"], roi_start=(0,0,0), roi_end=(512,512,200)),
-            Flipd(keys=["image"], spatial_axis=-1),
-            CenterSpatialCropd(keys=["image"], roi_size=(350,350,200)),
+            BboxCropd(keys=["image"]),
+            AddChanneld(keys=["image"]),
+            Orientationd(keys=["image"], axcodes="RAS"),
+            Spacingd(
+                keys=["image"],
+                pixdim=(1.5, 1.5, 1.5),
+                mode=("bilinear"),
+            ), # process h5 to here
+            ScaleIntensityRanged(
+                keys=["image"],
+                a_min=-175,
+                a_max=250,
+                b_min=0.0,
+                b_max=1.0,
+                clip=True,
+            ),            
             ToTensord(keys=["image"]),
         ])
 
     model = SegResNet(
-                        blocks_down=[1, 2, 2, 4],
-                        blocks_up=[1, 1, 1],
-                        init_filters=16,
-                        in_channels=1,
-                        out_channels=25,
-                        dropout_prob=0.0,
-                        )
+        blocks_down=[1, 2, 2, 4],
+        blocks_up=[1, 1, 1],
+        init_filters=16,
+        in_channels=1,
+        out_channels=25,
+        dropout_prob=0.0,
+    )
 
     store_dict = model.state_dict()
     model_dict = torch.load(checkpoint, map_location='cpu')['net']

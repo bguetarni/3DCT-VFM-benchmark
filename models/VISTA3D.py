@@ -21,15 +21,12 @@ import torch.nn as nn
 from monai.networks.blocks.upsample import UpSample
 from monai.networks.layers.factories import Act, Conv, Norm, split_args
 from monai.networks.layers.utils import get_act_layer, get_norm_layer
-from monai.utils import UpsampleMode, has_option
+from monai.utils import UpsampleMode, has_option, ensure_tuple
 
 from collections import OrderedDict
 from monai.networks.layers.factories import Norm, split_args, Act
-from monai.utils import has_option
-
 from monai.bundle import ConfigParser
-
-from monai.transforms import Compose, CenterSpatialCropd, Flipd, SpatialCropd
+from models.utils import BboxCropd
 
 # __all__ = ["SegResNetDS2"]
 
@@ -254,9 +251,9 @@ class SegResEncoder(nn.Module):
         return self._forward(x)
 
 
-def infer(input, preprocess, model, device):
+def infer(input, bbox, preprocess, model, device):
     with torch.no_grad():
-        input_tensor = preprocess({"image": input})
+        input_tensor = preprocess({"image": input, "bbox": bbox})
         input_tensor = input_tensor["image"]
         input_tensor = input_tensor.unsqueeze(dim=0).to(device)
         output = model(input_tensor).cpu()
@@ -282,7 +279,6 @@ def load(device, checkpoint=None, infer_yaml=None):
     preprocess = None
     upsample_mode = "deconv"
     resolution = None
-
 
     if resolution is not None:
         if not isinstance(resolution, (list, tuple)):
@@ -326,12 +322,9 @@ def load(device, checkpoint=None, infer_yaml=None):
     parser.read_config(infer_yaml)
     infer_transforms = parser.get_parsed_content("transforms_infer")
 
-    infer_transforms = Compose(transforms=[
-        *infer_transforms.transforms,
-        Flipd(keys=["image"], spatial_axis=-1),
-        SpatialCropd(keys=["image"], roi_start=(0,0,0), roi_end=(512,512,200)),
-        Flipd(keys=["image"], spatial_axis=-1),
-        CenterSpatialCropd(keys=["image"], roi_size=(300,300,200)),
-    ])
+    # insert BboxCropd after LoadImaged (which is 0th)
+    tr_ = list(infer_transforms.transforms)
+    tr_.insert(1, BboxCropd(keys=["image"]))
+    infer_transforms.transforms = ensure_tuple(tr_)
     
     return infer, infer_transforms, model
