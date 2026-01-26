@@ -1,16 +1,16 @@
-from monai.transforms import MapTransform
+from monai.transforms import MapTransform, CropForegroundd
 import numpy as np
 
 class BboxCropd(MapTransform):
     def __call__(self, data):
         if data["bbox"] is None:
-            pass
+            return CropForegroundd(keys=["image"], source_key="image")(data)
         else:
             data["bbox"] = self.fit_bbox_size(data["bbox"])
             xmin, ymin, zmin = data["bbox"][0]
             xmax, ymax, zmax = data["bbox"][1]
             data["image"] = data["image"][xmin:xmax, ymin:ymax, zmin:zmax]
-        return data
+            return data
 
     def fit_bbox_size(self, bbox, size=(100,100,30)):
         # increase bbox to fit to specified size

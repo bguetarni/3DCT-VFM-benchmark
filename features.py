@@ -57,10 +57,14 @@ if __name__ == "__main__":
         except (ValueError, KeyError):
             continue
         
-        output = infer(input_path, bbox, preprocess, model, device)
-        fts = output.flatten()
-        for j, f in enumerate(fts):
-            features.append({"name": str(j), "value": f, "features": args.type, "patient": id_})
+        try:
+            output = infer(input_path, bbox, preprocess, model, device)
+            fts = output.flatten()
+            for j, f in enumerate(fts):
+                features.append({"name": str(j), "value": f, "features": args.type, "patient": id_})
+        except (Exception, RuntimeError) as e:
+            print("Error/Exception occured: ", e)
+            continue
 
     # save to csv
     pandas.DataFrame(features).to_csv(out_path, index=False)
