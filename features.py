@@ -54,7 +54,7 @@ if __name__ == "__main__":
             p.sort_imaging()   # sort images to recover first CT scan (i.e., CT0)
             input_path = p.ct[0].path
             bbox = p.ct[0].get_GTV_bbox()
-        except (ValueError, KeyError):
+        except (ValueError, KeyError, IndexError):
             continue
         
         try:
