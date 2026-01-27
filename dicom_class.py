@@ -467,6 +467,7 @@ class Patient:
         """
 
         def safe_sorting_date(i):
+            i = filter(lambda j: not(j is None), i) # remove None elements
             valid_date = filter(lambda j: not(j.get_acquisition_date() is None), i)
             not_valid_date = filter(lambda j: j.get_acquisition_date() is None, i)
             return [*sorted(valid_date, key=lambda j: j.get_acquisition_date()), *not_valid_date]

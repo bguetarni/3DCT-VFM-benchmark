@@ -337,7 +337,8 @@ class HECKTOR(BaseLoader):
             clinical["CenterID"] = self.center_map[clinical["CenterID"]]
             clinical.update({"dose": dose_Gy})
 
-            p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
+            ct = [ct] if ct else None
+            p = dicom_class.Patient(patient_id=id, ct=ct, clinical=clinical)
             data.update({p.id: p})
 
         # task 3

@@ -2,13 +2,13 @@ from monai.transforms import MapTransform, CropForegroundd, CenterSpatialCropd
 import numpy as np
 
 class BboxCropd(MapTransform):
-    def __init__(self, keys, roi_size=(100,100,30), allow_missing_keys=False):
+    def __init__(self, keys, roi_size=(100,100,50), allow_missing_keys=False):
         super().__init__(keys, allow_missing_keys)
         self.roi_size = roi_size
 
     def __call__(self, data):
         if data["bbox"] is None:
-            data = CropForegroundd(keys=["image"], source_key="image")(data)
+            data = CropForegroundd(keys=["image"], source_key="image", allow_smaller=True)(data)
             return CenterSpatialCropd(keys=["image"], roi_size=self.roi_size)(data)
         else:
             data["bbox"] = self.fit_bbox_size(data["bbox"])
@@ -29,8 +29,9 @@ class BboxCropd(MapTransform):
         assert all(bbox[1] >= bbox[0]), "Second argument of bbox must be greater than first"
         for i in range(len(bbox[0])):
             if bbox[1][i] - bbox[0][i] < size[i]:
-                bbox[0][i] = min(0, bbox[0][i] - size[i]//2) # avoid negative values
-                bbox[1][i] += size[i]//2
+                bbox[0][i] = max(0, bbox[0][i] - size[i]//2) # avoid negative values
+                delta = np.abs(min(0, bbox[0][i] - size[i]//2))
+                bbox[1][i] += size[i]//2 + delta   # compensate if we had to shift the min value
         else:
             bbox = bbox
         return bbox
