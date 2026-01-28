@@ -136,7 +136,7 @@ class DataLoader:
 
         match row["features"]:
             case "dose":
-                return row["value"] > 64
+                return 64 < row["value"] and row["value"] < 80
             case "metastasis":
                 return row["value"] == 0
             case "localisation":
@@ -464,7 +464,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
 
         if exp_params["undersampling"]:
             print("applying undersampling to training data")
-            train_loader.undersampling(per_center=args.per_centere)
+            train_loader.undersampling(per_center=args.per_center)
 
         print("training data stat:")
         print(display_split_stats(train_loader))

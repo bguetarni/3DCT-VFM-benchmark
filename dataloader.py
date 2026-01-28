@@ -272,14 +272,11 @@ class HECKTOR(BaseLoader):
             "HPV Status": "hpv",
             "Treatment": "treatment",
             "Age": "age",
-            "dose": "dose",
+            # "dose": "dose",
         }
 
         self.clinical_encoding = {
-            "Gender": {0: 0, 1: 1}, # 0 = female / 1 = male
-
             "Performance Status": {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 80: 1, 90: 0, 100: 0},
-
             "M-stage": {"M0": 0, "M1": 1},
         }
 
