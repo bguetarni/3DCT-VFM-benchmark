@@ -9,7 +9,7 @@ set OUTPUT=C:/Users/bilel.guetarni/Desktop/workspace/SEQ-RT/experiments/%CODE%
 set TASK=R2y
 set KFOLD=3
 set TRAIN_SIZE=0.8
-set EPOCHS=300
+set EPOCHS=500
 set DATASET=hecktor
 
 :: linear classifier
