@@ -37,9 +37,12 @@ class MultiCenterStratifiedKFold:
         """
 
         if kfold is None:
-            # if (all centers) size > 500 k=5 else k=3
-            sizes = np.array([len(self.Y[self.Y["center"] == c]) for c in self.Y["center"].unique()])
-            kfold = 5 if np.all(sizes >= 500) else 3
+            if per_center:
+                # if (all centers) size > 500 k=5 else k=3
+                sizes = np.array([len(self.Y[self.Y["center"] == c]) for c in self.Y["center"].unique()])
+                kfold = 5 if np.all(sizes >= 500) else 3
+            else:
+                kfold = 5 if len(self.Y) > 500 else 3
 
         if per_center:
             # define indices and labels
@@ -137,9 +140,11 @@ class DataLoader:
             case "metastasis":
                 return row["value"] == 0
             case "localisation":
-                return row["value"] == "oropharynx"
+                return row["value"] == 0
             case "treatment":
-                return row["value"] in (1,2)
+                return row["value"] in [0,1]
+            case "surgery":
+                return row["value"] == 0
             case _:
                 # if variable not in inclusion criteria list, include it anyways
                 return True
@@ -414,7 +419,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
     test_metrics = []
     best_state_dict = {}
     normalizer = {}
-    for k, (tain_data, valid_data, test_data) in enumerate(data_loader.split(kfold, train_val_split=args.train_split, per_center=False)):
+    for k, (tain_data, valid_data, test_data) in enumerate(data_loader.split(kfold, train_val_split=args.train_split, per_center=args.per_center)):
         print(f"kfold {k+1}/{kfold}")
         X_train, Y_train = tain_data
         X_valid, Y_valid = valid_data
@@ -459,7 +464,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
 
         if exp_params["undersampling"]:
             print("applying undersampling to training data")
-            train_loader.undersampling(per_center=True)
+            train_loader.undersampling(per_center=args.per_centere)
 
         print("training data stat:")
         print(display_split_stats(train_loader))
@@ -582,13 +587,14 @@ if __name__ == "__main__":
     parser.add_argument('--classifier', type=str, required=True, choices=["attention", "concat", "linear", "ffn"], help="classifier type")
     parser.add_argument('--n_dim', type=int, default=128, help="dimension after features fusion/concatenation")
     parser.add_argument('--n_layer', type=int, default=1, help="number of layers in attention fusion")
+    parser.add_argument('--dropout', type=float, default=0.5, help="dropout probability")
     parser.add_argument('--lambda_', type=float, default=0.5, help="lambda parameter for attention trade-off")
     parser.add_argument('--mean_reg_lambda', type=float, default=0., help="lambda parameter for mean divergence regularization loss")
     parser.add_argument('--variance_reg_lambda', type=float, default=0., help="lambda parameter for variance divergence regularization loss")
-    parser.add_argument('--class_weights', action='store_true', help="wether to use class weighting in the loss to counter class imbalance")
-    parser.add_argument('--undersampling', action='store_true', help="wether to apply data undersampling to the training data")
+    parser.add_argument('--class_weights', action='store_true', help="whether to use class weighting in the loss to counter class imbalance")
+    parser.add_argument('--undersampling', action='store_true', help="whether to apply data undersampling to the training data")
+    parser.add_argument('--per_center', action='store_true', help="whether to split data per center in kfold")
     parser.add_argument('--normalizer', type=str, default="scale", help="normalizer to pre-process data before training model")
-    parser.add_argument('--pca', type=int, default=None, help="dimension after applying PCA, set to None to not apply")
     parser.add_argument('--optimizer', type=str, default="adam")
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--bsize', type=int, default=1)

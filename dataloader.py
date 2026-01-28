@@ -408,7 +408,7 @@ class HECKTOR(BaseLoader):
             fts = pandas.read_csv(file_)
             fts["modality"] = "image"
             fts["features"] = file_.stem
-            features.append(fts)        
+            features.append(fts)
         features = pandas.concat(features)
 
         # build labels

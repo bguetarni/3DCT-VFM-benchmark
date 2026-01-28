@@ -102,9 +102,10 @@ class Attention(nn.Module, BaseClassifier):
         Args
             dims (dict) dict of dimension for each modality and features ({"m": {"f1": n1, "f2": n2}, ...}})
             n_dim (int) internal dimension of vectors similar to Transformer.n_dim
-            n_class (int) number of classes
-            lambda_ (float) trade-off parameter for feature vector update
             n_layer (int) number of attention fusion layers
+            lambda_ (float) trade-off parameter for feature vector update
+            dropout (float) dropout probability
+            n_class (int) number of classes
         """
         super().__init__()
         self.n_dim = n_dim
@@ -178,7 +179,7 @@ class Attention(nn.Module, BaseClassifier):
                     # propagate modality query into feature vectors
                     x[m] = self.lambda_ * x[m] + (1 - self.lambda_) * q_mi[m]
                 
-                x[m] = self.layers["ln"](self.layers["dropout"](x[m]))   # dropout and layer norm
+                x[m] = self.layers["dropout"](self.layers["ln"](x[m]))   # layer norm and dropout
                 
                 # FFN
                 x[m] = self.layers["FFN"](x[m])
