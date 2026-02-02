@@ -404,6 +404,9 @@ class RTDOSE(DICOM):
         except IndexError:
             # print("WARNING: cannot return GTV dose as GTV contour not found in RTSTRUCT")
             return None
+        
+        if ctrs is None:
+            return None
 
         # transform contours coordinates to RTDOSE voxel space
         rtdose = self.get_sitk_image()
