@@ -423,11 +423,17 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
     test_metrics = []
     best_state_dict = {}
     normalizer = {}
+    patients_idxes = {}
     for k, (tain_data, valid_data, test_data) in enumerate(data_loader.split(kfold, train_val_split=args.train_split, per_center=args.per_center)):
         print(f"kfold {k+1}/{kfold}")
         X_train, Y_train = tain_data
         X_valid, Y_valid = valid_data
         X_test, Y_test = test_data
+
+        patients_idxes.update({f"fold {k}": {
+            "train": X_train.index.to_list(), 
+            "valid": X_valid.index.to_list(), 
+            "test": X_test.index.to_list()}})
 
         # construct dict of number of dimensions for each modality and features
         dims = {}
@@ -569,7 +575,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                 best_state_dict.update({k: model.state_dict()})
             # =========================================================================
         
-    return train_metrics, test_metrics, best_state_dict, normalizer
+    return train_metrics, test_metrics, best_state_dict, normalizer, patients_idxes
 
 
 if __name__ == "__main__":
@@ -622,9 +628,12 @@ if __name__ == "__main__":
     print("preparing data...")
     data_loader.prepare_data(exp_params, args.task)
 
+    # save feature names
+    feature_names = data_loader.X.columns.to_list()
+
     # fit model
     print("fitting model")
-    train_metrics, test_metrics, best_state_dict, normalizer = kfold_training(exp_params, data_loader, args.kfold, device,)
+    train_metrics, test_metrics, best_state_dict, normalizer, patients_idxes = kfold_training(exp_params, data_loader, args.kfold, device,)
     
     # save results
     pandas.DataFrame(train_metrics).to_csv(out_path.joinpath("train_metrics.csv"))
@@ -640,7 +649,12 @@ if __name__ == "__main__":
             pickle.dump(norm, f)
 
     # save exp params
+    exp_params["feature_names"] = feature_names
     with open(out_path.joinpath("params.json"), "w") as f:
         json.dump(exp_params, f)
+
+    # save patients indices
+    with open(out_path.joinpath("patients_idx.json"), "w") as f:
+        json.dump(patients_idxes, f)
 
     print("done.")
