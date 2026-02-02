@@ -1,6 +1,5 @@
 from abc import ABC
 import os
-import pathlib
 from datetime import datetime
 import numpy as np
 import SimpleITK as sitk
@@ -62,12 +61,15 @@ class DICOM(ABC):
         else:
             raise FileNotFoundError(f"DICOM file not found with path {self.path}")
         
-    def get_sitk_image(self):
-        try:
-            reader = sitk.ImageSeriesReader()
-            reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.path))
-            img = reader.Execute()
-        except RuntimeError:
+    def get_sitk_image(self, dicom_serie=True):
+        if dicom_serie:
+            try:
+                reader = sitk.ImageSeriesReader()
+                reader.SetFileNames(reader.GetGDCMSeriesFileNames(self.path))
+                img = reader.Execute()
+            except RuntimeError:
+                img  = sitk.ReadImage(self.get_dcm_path())
+        else:
             img  = sitk.ReadImage(self.get_dcm_path())
         
         img = sitk.DICOMOrient(img, 'LAS')
@@ -308,7 +310,7 @@ class CT(Imaging):
                 bbox = None
             else:
                 try:
-                    # liadt all contours available in RTSTRUCT
+                    # list all contours available in RTSTRUCT
                     seg = self.rtstruct.get_all_OARs()
                     # calculate similarity between contours name and 'gtv'
                     pairs =  [(i, similar("gtv", i.lower().replace(" ", ""))) for i in seg if "gtv" in i.lower()]
@@ -337,6 +339,15 @@ class CT(Imaging):
 class RTDOSE(DICOM):
     def __init__(self, path):
         super().__init__(path)
+
+    def get_sitk_image(self):
+        img = super().get_sitk_image(dicom_serie=False)
+        dcm = pydicom.dcmread(self.get_dcm_path())
+        DoseGridScaling = float(dcm.DoseGridScaling)
+        dose_array = sitk.GetArrayFromImage(img) * DoseGridScaling
+        dose_image = sitk.GetImageFromArray(dose_array)
+        dose_image.CopyInformation(img)
+        return dose_image
 
     def convert2nifti(self, path_, align_to_ct=True):
         """
@@ -372,6 +383,39 @@ class RTDOSE(DICOM):
             scaled_dose = resampler.Execute(scaled_dose)
 
         sitk.WriteImage(scaled_dose, path_)
+
+    def get_GTV_dose(self):
+        def str_similarity(a, b):
+            return SequenceMatcher(None, a, b).ratio()
+        
+        if not(self.parent and self.parent.rtstruct):
+            # print("WARNING: cannot return GTV dose as parent is not defined for reference to RTSTRUCT")
+            return None
+
+        try:
+            # list all contours available in RTSTRUCT
+            # calculate similarity between contours name and 'gtv'
+            # select contour with name that most resemble 'gtv'
+            # get contours coordinates in pixel space
+            seg = self.parent.rtstruct.get_all_OARs()
+            pairs =  [(i, str_similarity("gtv", i.lower().replace(" ", ""))) for i in seg if "gtv" in i.lower()]
+            seg, _ = sorted(pairs, reverse=True, key=lambda i: i[1])[0]
+            ctrs = self.parent.rtstruct.get_contours(seg, convert_to_voxel=False)
+        except IndexError:
+            # print("WARNING: cannot return GTV dose as GTV contour not found in RTSTRUCT")
+            return None
+
+        # transform contours coordinates to RTDOSE voxel space
+        rtdose = self.get_sitk_image()
+        ctrs = np.array(list(map(rtdose.TransformPhysicalPointToIndex, ctrs.tolist())), dtype=np.int64)
+
+        # create mask of GTV volume
+        array = sitk.GetArrayFromImage(rtdose)
+        mask = fill_vol_ctrs(array.shape, ctrs)
+
+        # calculate median dose in GTV volume
+        gtv_dose = np.median(array[mask])
+        return gtv_dose
 
 
 class RTSTRUCT(DICOM):

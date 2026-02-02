@@ -272,7 +272,7 @@ class HECKTOR(BaseLoader):
             "HPV Status": "hpv",
             "Treatment": "treatment",
             "Age": "age",
-            # "dose": "dose",
+            "dose": "dose",
         }
 
         self.clinical_encoding = {
@@ -291,8 +291,8 @@ class HECKTOR(BaseLoader):
         resample_img = scipy.ndimage.zoom(input=sitk.GetArrayFromImage(dose_img), zoom=zoom, mode="nearest")
 
         mask_bool = sitk.GetArrayFromImage(mask_img)
-        gtv_dose = resample_img[mask_bool == 1].flatten()
-        return gtv_dose.mean()
+        gtv_dose = resample_img[mask_bool == 1]
+        return np.median(gtv_dose)
 
     def build_patients(self, log=None):
         data = {}
@@ -589,7 +589,7 @@ class HeadNeckPETCT(TCIA):
             "Primary Site": "localisation",
             "M-stage": "metastasis",
             "TNM group stage": "stage",
-            "HPV status": "hpv",
+            # "HPV status": "hpv",
             "Therapy": "treatment",
             "Surgery": "surgery",
         }
@@ -710,6 +710,15 @@ class HeadNeckPETCT(TCIA):
         features = pandas.concat([features, pandas.DataFrame(clinical)])
         label = pandas.DataFrame(label)
         return features, label
+
+    def build_patients(self, log=None):
+        patients = super().build_patients(log)
+        print("calculating GTV dose...")
+        for p in tqdm.tqdm(patients, ncols=50):
+            for ct in p.ct:
+                dose = ct.rtdose.get_GTV_dose() if ct.rtdose else None
+                p.clinical.update({"dose": dose})
+        return patients
 
     def get_spatial_transforms():
         tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,100,0), roi_end=(512,512,350)),]
@@ -932,9 +941,9 @@ class RADCURE(TCIA):
         self.clinical_key_mapping = {
             "Sex": "sex",
             "ECOG PS": "ecog",
-            "Smoking Status": "smoking",
+            # "Smoking Status": "smoking",
             "Stage": "stage",
-            "HPV": "hpv",
+            # "HPV": "hpv",
             "Tx Modality": "treatment",
             "Age": "age",
             "Dose": "dose",
