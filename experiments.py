@@ -136,7 +136,7 @@ class DataLoader:
 
         match row["features"]:
             case "dose":
-                return 64 < row["value"] and row["value"] < 80
+                return 64 <= row["value"] and row["value"] < 80
             case "metastasis":
                 return row["value"] == 0
             case "localisation":
@@ -415,6 +415,10 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
         kfold (int) number of kfold cross-validation folds
     """
 
+    if exp_params["undersampling"]:
+        print("applying undersampling")
+        data_loader.undersampling(per_center=args.per_center)
+
     train_metrics = []
     test_metrics = []
     best_state_dict = {}
@@ -461,10 +465,6 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
         train_loader = DataLoader(base_path=None, name=None, X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"], class_weights=exp_params["class_weights"])
         valid_loader = DataLoader(base_path=None, name=None, X=X_valid, Y=Y_valid)
         test_loader = DataLoader(base_path=None, name=None, X=X_test, Y=Y_test)
-
-        if exp_params["undersampling"]:
-            print("applying undersampling to training data")
-            train_loader.undersampling(per_center=args.per_center)
 
         print("training data stat:")
         print(display_split_stats(train_loader))
