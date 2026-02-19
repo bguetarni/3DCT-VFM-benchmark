@@ -99,7 +99,7 @@ def cox_pretrain(backbone, X, Y, exp_params, device, epsilon=1e-5, **kwargs):
     loader.prepare_data(exp_params["task"])
 
     # model : backbone + linear layer
-    model = CoxModel(backbone, exp_params["cox_strategy"])
+    model = CoxModel(backbone)
     model.to(device)
     model.train()
 

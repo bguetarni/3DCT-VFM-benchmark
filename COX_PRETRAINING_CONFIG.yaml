@@ -1,7 +1,7 @@
 optimizer:
   name: adam
   initial_lr: 1e-6
-  max_lr: 1e-5
+  max_lr: 5e-5
   final_lr: 1e-6
   warmup: 5
 batch_size: 32
