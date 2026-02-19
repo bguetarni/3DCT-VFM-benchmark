@@ -29,7 +29,7 @@ if __name__ == "__main__":
                 level=logging.DEBUG)
     logger = logging.getLogger()
 
-    data = loader.load(logger)
+    data = loader.build(logger)
     print(f"\n {len(data)} patients loaded")
 
     print("saving in pkl..")

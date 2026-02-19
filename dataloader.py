@@ -1,1088 +1,459 @@
-from abc import ABC, abstractmethod
-import glob
-import os
-import tqdm
-import pathlib
-import re
-import pickle
-import pydicom
-import pandas
-import datetime
+import math
+from itertools import chain
 import numpy as np
-import SimpleITK as sitk
-import scipy
-from monai.transforms import Flip, SpatialCrop
+import pandas
+import torch
+import sklearn
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 
-import dicom_class
-import dicom_utils
+from datasets import ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, QINHEADNECK, OropharyngealRadiomicsOutcomes, RADCURE
+from datasets import CATEGORICAL_CLINICAL_VARIABLES
 
 recurrence_2y_name = "R2y"
 recurrence_5y_name = "R5y"
 
-CATEGORICAL_CLINICAL_VARIABLES = ["sex", "ecog", "smoking", "stage", 
-                                  "hpv", "treatment", "surgery", "localisation", 
-                                  "metastasis"]
-
-def convert2date(dt):
-    return datetime.datetime.strptime(dt, "%d/%m/%Y").date()
-
-
-class BaseLoader(ABC):
-    def __init__(self, path):
-        self.path = path
-
-    def load(self, logger):
-        data = self.build_patients(logger)
-        data = {p.id: p for p in data}
-        return data
+class Normalizer:
+    def __init__(self, method=None):
+        match method:
+            case "scale":
+                self.normalizer = sklearn.preprocessing.StandardScaler()
+            case "minmax":
+                self.normalizer = sklearn.preprocessing.MinMaxScaler(feature_range=(0,1))
+            case "unit":
+                self.normalizer = sklearn.preprocessing.Normalizer()
+            case _:
+                self.normalizer = sklearn.preprocessing.StandardScaler()
     
-    def find_digit(self, x):
-        if isinstance(x, str):
-            digits = re.findall("\d", x)
-            if digits:
-                return int(digits[0])
+    def fit_transform(self, X):
+        X.loc[:,:] = self.normalizer.fit_transform(X.values)
+        return X
+
+    def transform(self, X):
+        X.loc[:,:] = self.normalizer.transform(X.values)
+        return X
+    
+    def get_params(self):
+        return self.normalizer.__getstate__()
+
+    def set_params(self, params):
+        self.normalizer.__setstate__(params)
+
+class MultiCenterStratifiedKFold:
+    def __init__(self, Y):
+        self.Y = Y
+
+    def split(self, kfold=None, train_val_split=0.6, per_center=False):
+        """
+        Split data with stratified k-fold
+
+        kfold (int) number of folds
+        train_val_split (float) train/validation data factor for training, the rest is for validation
+        per_center (bool) wether to split data seaparatly according to center
+        """
+
+        if kfold is None:
+            if per_center:
+                # if (all centers) size > 500 k=5 else k=3
+                sizes = np.array([len(self.Y[self.Y["center"] == c]) for c in self.Y["center"].unique()])
+                kfold = 5 if np.all(sizes >= 500) else 3
             else:
-                return None
+                kfold = 5 if len(self.Y) > 500 else 3
+
+        if per_center:
+            # define indices and labels
+            sample_idx = {c: np.array(self.Y[self.Y["center"] == c].index) for c in self.Y["center"].unique()}
+            sample_labels = {c: self.Y[self.Y["center"] == c]["label"] for c in self.Y["center"].unique()}
+
+            # stratified kfold split to ensure similar label distribution across folds
+            skf = {c: StratifiedKFold(n_splits=kfold, shuffle=True).split(sample_idx[c], sample_labels[c].values) for c in self.Y["center"].unique()}
+
+            for _ in range(kfold):
+                train_idx = {}
+                val_idx = {}
+                test_idx = {}
+                for c, skfold in skf.items():
+                    train_idx_center, test_idx_center = next(skfold)
+                    sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
+                    train_idx_center_, val_idx_center_ = next(sss.split(sample_idx[c][train_idx_center], sample_labels[c].loc[sample_idx[c][train_idx_center]]))
+                    train_idx.update({c: sample_idx[c][train_idx_center][train_idx_center_]})
+                    val_idx.update({c: sample_idx[c][train_idx_center][val_idx_center_]})
+                    test_idx.update({c: sample_idx[c][test_idx_center]})
+                
+                # concatenate indices from different centers
+                train_idx = np.concatenate(list(train_idx.values()))
+                val_idx = np.concatenate(list(val_idx.values()))
+                test_idx = np.concatenate(list(test_idx.values()))
+                yield train_idx, val_idx, test_idx
+            return StopIteration
         else:
-            return None
-        
-    def parse_dicom_data(self, path):
+            # define indices
+            sample_idx = np.array(self.Y.index)
+
+            # stratified kfold split to ensure similar label distribution across folds
+            skf = StratifiedKFold(n_splits=kfold, shuffle=True)
+
+            for train_idx, test_idx in skf.split(sample_idx, self.Y["label"].values):
+                sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
+                train_idx_, val_idx_ = next(sss.split(sample_idx[train_idx], self.Y.loc[sample_idx[train_idx]]["label"].values))
+                yield sample_idx[train_idx][train_idx_], sample_idx[train_idx][val_idx_], sample_idx[test_idx]
+            return StopIteration
+
+
+class DataLoader:
+    def __init__(self, base_path, name, X=None, Y=None, uniform_sampling=False, class_weights=False):
+        self.base_path = base_path
+        self.name = name
+        self.X = X
+        self.Y = Y
+        self.uniform_sampling = uniform_sampling
+        self.class_weights = class_weights
+
+        if class_weights and not(Y is None):
+            self.cw = self.comput_class_weights()
+
+    def len(self):
+        return len(self.Y)
+    
+    def __getitem__(self, idx):
+        return self.X.loc[idx], self.Y.loc[idx]
+
+    def one_hot_encode(self, value, max_value):
+        one_hot = np.zeros(int(max_value) + 1)
+        one_hot[int(value)] = 1
+        return one_hot
+
+    def load(self):
+        match self.name:
+            case "artix":
+                loader = ARTIX
+            case "hecktor":
+                loader = HECKTOR
+            case "headneckctatlas":
+                loader = HeadNeckCTAtlas
+            case "headneckpetct":
+                loader = HeadNeckPETCT
+            case "qinheadneck":
+                loader = QINHEADNECK
+            case "oropharyngealradiomicsoutcomes":
+                loader = OropharyngealRadiomicsOutcomes
+            case "radcure":
+                loader = RADCURE
+            case _:
+                raise ValueError(f"dataset name {self.name} not recognized. See args.dataset argument choices.")
+            
+        loader = loader(None)
+        x, y = loader.get_features_labels(self.base_path)
+        self.X = x
+        self.Y = y
+
+    def inclusion_criteria_clinical_features(self, row):
         """
-        Load a folder which could be anything (collection of imaging, CT, RTDOSE, ...)
-
-        return list of objects of type (CT, CBCT, RTDOSE, RTSTRUCT)
+        Return True if feature value corresponds to inclusion criteria, False otherwise
         """
 
-        data = []
-        try:
-            files = glob.glob(os.path.join(path, "*"))
-            if all(map(pydicom.misc.is_dicom, files)):
-                # it is DICOM folder
+        if row["value"] is None:
+            return False
 
-                if len(files) == 0:
-                    return []
-                
-                dcm = pydicom.dcmread(files[0])
-                type = dcm.get((0x0008, 0x0060)).value
-                if type == "CT":
-                    if dicom_utils.is_CT(dcm, use_exposure_time=False):
-                        return [dicom_class.CT(path)]
-                    else:
-                        return [dicom_class.CBCT(path)]
-                elif type == "RTSTRUCT":
-                    return [dicom_class.RTSTRUCT(path)]
-                elif type == 'RTDOSE':
-                    return [dicom_class.RTDOSE(path)]
+        match row["features"]:
+            case "dose":
+                return 64 <= row["value"] and row["value"] < 80
+            case "metastasis":
+                return row["value"] == 0
+            case "localisation":
+                return row["value"] == 0
+            case "treatment":
+                return row["value"] in [0,1]
+            case "surgery":
+                return row["value"] == 0
+            case _:
+                # if variable not in inclusion criteria list, include it anyways
+                return True
+
+    def preprocess(self, exp_params, task):
+        """
+        remove patients with missing data or invalid label
+        prepare data for training according to experiment parameters and task
+        keep only modalities and imaging features defined in exp_params
+        """
+
+        def row_to_label(row):
+            if task == recurrence_2y_name:
+                T = 2
+            elif task == recurrence_5y_name:
+                T = 5
+            else:
+                raise ValueError(f"task {task} not valid. Valid ones are [{recurrence_2y_name}, {recurrence_5y_name}]")
+
+            if row["rfs_T"] is None:
+                return None
+            elif row["rfs_T"] < T*365:
+                if row["rfs_delta"] == 1:
+                    return 0
                 else:
-                    return []
-        except PermissionError:
-            pass
-
-        for folder in glob.glob(os.path.join(path, "*")):
-            if pathlib.Path(folder).is_dir():
-                data.extend(self.parse_dicom_data(folder))
-
-        return data
-
-
-class ARTIX(BaseLoader):
-    # CT vs CBCT: (0008, 0070) Manufacturer of CBCT is 'ELEKTA'
-    def __init__(self, path):
-        super().__init__(path)
-        self.clinical_key_mapping = {}
-        self.clinical_encoding = {}
-
-    def build_patients(self, log=None):
-        data = []
-        list_of_patients =  glob.glob(os.path.join(self.path, "DICOM_ARTIX_data", "*"))
-        for p in tqdm.tqdm(list_of_patients):
-            # convert patient ID from folder to clinical data
-            id = pathlib.Path(p).name
-            id_map = pandas.read_excel(os.path.join(self.path, "ARTIX_ID_CORRELATION.xlsx"))
-            id = str(id_map[id_map["My Identifier ID"].astype(float) == float(id)]["USUBJID"].item()).zfill(3)
-            
-            # load every DICOM data of patient folder
-            patient_data = self.parse_dicom_data(p)
-
-            # group CT with dose
-            for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
-                done = False
-                for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
-                    if max(dicom_utils.get_directory_level(rtdose.path, ct.path)) > 1:
-                        continue
-
-                    if rtdose.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID() or \
-                        rtdose.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
-                            ct.rtdose is None:
-                        ct.add_rtdose(rtdose, log)
-                        done = True
-                        break
-
-                if not(done) and log: log.warning(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
-
-            # group CT with struct
-            for rtstruct in filter(lambda i: isinstance(i, dicom_class.RTSTRUCT), patient_data):
-                done = False
-                for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
-                    if (rtstruct.get_StudyID() == ct.get_StudyID() and ct.rtstruct is None) or \
-                        rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID() or \
-                            (max(dicom_utils.get_directory_level(rtstruct.path, ct.path)) < 2 and ct.rtstruct is None):
-                        ct.add_rtstruct(rtstruct, log)
-                        done = True
-                        break
-
-                if not(done) and log: log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
-            
-            # parse clinical data
-            clinical = {}
-            for i in ("20241021_PATIENT_DESCRIPTION_LTSI.csv", "20241021_EFFICACY_LTSI.csv", "20241021_TREATMENT_LTSI.csv"):
-                df = pandas.read_csv(os.path.join(self.path, "toxicity_data", i), sep=";", encoding='ISO-8859-1')
-                df = df[df["USUBJID"].astype(int) == int(id)].to_dict(orient="records")
-                if df:
-                    clinical.update(df[0])
-                else:
-                    if log: log.warning(f"WARNING: patient {id} not found in clinical data {i}")
-
-            # parse toxicity data
-            tox_df = pandas.read_csv(os.path.join(self.path, "toxicity_data", "20241021_TOX_GRADE_LTSI.csv"), sep=";", encoding='ISO-8859-1')
-            tox_df = tox_df[(tox_df["USUBJID"].astype(int) == int(id)) & (tox_df["AETERM"] == "XEROSTOMIE")].to_dict(orient="records")
-            if tox_df:
-                tox_df = tox_df[0]
-                clinical.update({"baseline": tox_df["grade_S0"], "xerostomia": tox_df["grade_M6"]})
+                    return None
             else:
-                if log: log.warning(f"WARNING: patient {id} toxicity data not found")
+                return 1
 
-            # build patient object
-            p = dicom_class.Patient(
-                patient_id = str(id).zfill(3),
-                ct = list(filter(lambda i: isinstance(i, dicom_class.CT), patient_data)),
-                cbct = list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
-                clinical = clinical)
-            
-            data.append(p)
-        
-        return data
-    
-    def generate_clinical_df(self):
-        col = {
-            "USUBJID":"Unique subject identifier",
-            "SEX":"Gender",
-            "AGE":"Age at inclusion",
-            "BMI":"Body Mass Index (kg/m²)",
-            "ECOG":"OMS performance status",
-            "FUM":"Tabagism",
-            "PA":"Number of pack-year",
-            "OH":"Ethylisme",
-            "DIAB":"Diabetes Mellitus",
-            "P16":"p16 gene expression",
-            "ST_STAG":"Strat Disease Stage",
-            "ST_HPV":"Strat HPV Status",
-            "HISTO":"Tumor histology",
-            "LOC":"Primary tumor localization",
-            "NSTAG":"N stage",
-            "RT_NB":"Number of RT sessions",
-            "PTV70_DOSE":"PTV70 Dose per fraction"}
+        # select only imaging features defined in exp_params
+        self.X = self.X[(self.X["modality"] != "image") | ((self.X["modality"] == "image") & (self.X["features"].isin(exp_params["extractors"])))]
 
-        df = None
-        for f in ["20241021_PATIENT_DESCRIPTION_LTSI.csv", "20241021_DOSIMETRY_LTSI.csv", "20241021_TREATMENT_LTSI.csv"]:
-            f = pandas.read_csv(os.path.join(self.path, "toxicity_data", f), sep=";", encoding='ISO-8859-1')
-            if "DOSISEQ" in f.columns:
-                f = f[f["DOSISEQ"] == "Initial"]
-            f = f[[c for c in f.columns if c in col.keys()]]
-            if df is None:
-                df = f
-            else:
-                df = df.merge(f, how='outer')
-
-        df = df.rename(columns=col, errors="raise")
-        return df
-    
-    def build_dataset(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
-
-        with open(base_path.joinpath("pickle datasets", "artix.pickle"), "rb") as f:
-            patients = pickle.load(f)
-
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "artix").iterdir():
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.stem
-            fts["patient"] = fts["patient"].apply(lambda i: str(i).zfill(3))
-            features.append(fts)        
-        features = pandas.concat(features)
-
-        # build labels
-        label = []
-        for id_, p in patients.items():
-            r2y, r5y = None, None
-
-            progdt = p.clinical["PROGDT"]   # date of progression
-            rtend = p.clinical["RTENDT"]   # date of end RT
-            lastfollow = p.clinical["DDNDT"]   # date of last follow-up
-            prog = p.clinical["PROG"]   # binary indicator of progression occuring during follow-up
-            
-            if pandas.isna(progdt) or pandas.isna(rtend):
-                prog_endrt_days = None
-            else:
-                prog_endrt_days = (convert2date(progdt) - convert2date(rtend)).days
-
-            if lastfollow is None or pandas.isna(rtend):
-                endfollow_endrt_days = None
-            else:
-                endfollow_endrt_days = (convert2date(lastfollow) - convert2date(rtend)).days
-
-            if prog == "Yes" and not(prog_endrt_days is None):
-                r2y = int(prog_endrt_days > 2*365)
-                r5y = int(prog_endrt_days > 5*365)
-            elif not(endfollow_endrt_days is None):
-                r2y = 1 if endfollow_endrt_days > 2*365 else None
-                r5y = 1 if endfollow_endrt_days > 5*365 else None
-            else:
-                pass
-            
-            label.append({"patient": id_, 
-                          "center": "CEM", # Centre Eugene Marquis
-                          recurrence_2y_name: r2y,
-                          recurrence_5y_name: r5y})
-        label = pandas.DataFrame(label)
-
-        return features, label
-
-    def get_spatial_transforms():
-        tr = [SpatialCrop(roi_start=(0,0,0), roi_end=(1000,1000,400)),]
-        return tr
-
-
-class HECKTOR(BaseLoader):
-    def __init__(self, path):
-        super().__init__(path)
-        self.center_map = {1: 'CHUM', 2: 'CHUP', 3: 'CHUS', 6: 'HGJ', 7: 'HMR', 5: 'MDA', 8: 'USZ'}
-
-        self.clinical_key_mapping = {
-            "Gender": "sex",
-            # "Performance Status": "ecog",
-            # "Tobacco Consumption": "smoking",
-            # "Alcohol Consumption": "alcohol",
-            "M-stage": "metastasis",
-            # "HPV Status": "hpv",
-            "Treatment": "treatment",
-            "Age": "age",
-            # "dose": "dose",
-        }
-
-        self.clinical_encoding = {
-            "Performance Status": {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 80: 1, 90: 0, 100: 0},
-            "M-stage": {"M0": 0, "M1": 1},
-        }
-
-    def get_avg_dose_scipy(self, ct, mask, dose):
-        dose_img = sitk.DICOMOrient(sitk.ReadImage(dose), 'RAS')
-        mask_img = sitk.DICOMOrient(sitk.ReadImage(mask), 'RAS')
-        ct_img = sitk.DICOMOrient(sitk.ReadImage(ct), 'RAS')
-
-        moving_shape = np.array(sitk.GetArrayFromImage(dose_img).shape)
-        reference_shape = np.array(sitk.GetArrayFromImage(ct_img).shape)
-        zoom = reference_shape / moving_shape
-        resample_img = scipy.ndimage.zoom(input=sitk.GetArrayFromImage(dose_img), zoom=zoom, mode="nearest")
-
-        mask_bool = sitk.GetArrayFromImage(mask_img)
-        gtv_dose = resample_img[mask_bool == 1]
-        return np.median(gtv_dose)
-
-    def build_patients(self, log=None):
-        data = {}
-
-        # task 2
-        list_of_patients =  glob.glob(os.path.join(self.path, "Task 2", "*"))
-        for p in tqdm.tqdm(list_of_patients):
-            if not os.path.isdir(p):
-                continue
-
-            id = os.path.split(p)[1]
-
-            # calculate GTV dose
-            ct = os.path.join(self.path, "Task 1", id, f"{id}__CT.nii.gz")
-            mask = os.path.join(self.path, "Task 1", id, f"{id}.nii.gz")
-            dose = os.path.join(p, f"{id}__RTDOSE.nii.gz")
-            if os.path.exists(ct) and os.path.exists(mask) and os.path.exists(dose):
-                try:
-                    dose_Gy = int(self.get_avg_dose_scipy(ct, mask, dose))
-                except IndexError:
-                    dose_Gy = None
-            else:
-                dose_Gy = None
-            
-            if os.path.exists(ct):
-                ct = dicom_class.CT(ct)
-            else:
-                if log: log.warning(f"WARNING: no CT found for patient {id}")
-                ct = None
-
-            if not(ct is None) and os.path.exists(dose):
-                ct.add_rtdose(dicom_class.RTDOSE(dose))
-
-            if not(ct is None) and os.path.exists(mask):
-                ct.add_rtstruct(dicom_class.RTSTRUCT(mask))
-
-            df = pandas.read_csv(os.path.join(self.path, "Task 2", "HECKTOR_2025_Training_Task_2.csv"))
-            clinical = df[df["PatientID"] == str(id)].to_dict(orient="records")[0]
-            clinical["CenterID"] = self.center_map[clinical["CenterID"]]
-            clinical.update({"dose": dose_Gy})
-
-            ct = [ct] if ct else None
-            p = dicom_class.Patient(patient_id=id, ct=ct, clinical=clinical)
-            data.update({p.id: p})
-
-        # task 3
-        list_of_patients =  glob.glob(os.path.join(self.path, "Task 3", "*"))
-        for p in tqdm.tqdm(list_of_patients):
-            if not os.path.isdir(p):
-                continue
-
-            id = os.path.split(p)[1]
-
-            ct = os.path.join(p, f"{id}__CT.nii.gz")
-            if os.path.exists(ct):
-                ct = dicom_class.CT(glob.glob(os.path.join(p, "*CT*"))[0])
-            else:
-                ct = None
-
-            df = pandas.read_csv(os.path.join(self.path, "Task 3", "HECKTOR_2025_Training_Task_3.csv"))
-            clinical = df[df["PatientID"] == str(id)].to_dict(orient="records")[0]
-            clinical["CenterID"] = self.center_map[clinical["CenterID"]]
-
-            if id in data.keys():
-                if data[id].ct is None and ct:
-                    data[id].ct = ct
-                
-                data[id].clinical.update(clinical)
-            else:
-                p = dicom_class.Patient(patient_id=id, ct=[ct], clinical=clinical)
-                data.update({p.id: p})
-        
-        return list(data.values())
-    
-    def generate_clinical_df(self):
-        col = {
-            "PatientID": "PatientID",
-            "Age": "Age",
-            "Gender": "Gender",
-            "Tobacco Consumption": "Tobacco Consumption",
-            "Alcohol Consumption": "Alcohol Consumption",
-            "Performance Status": "Performance Status",
-            "M-stage": "M-stage",
-            "HPV Status": "HPV Status",
-        }
-
-        df1 = pandas.read_csv(os.path.join(self.path, "Task 1", "HECKTOR_2025_Training_Task_1.csv"))
-        df2 = pandas.read_csv(os.path.join(self.path, "Task 2", "HECKTOR_2025_Training_Task_2.csv"))
-        df3 = pandas.read_csv(os.path.join(self.path, "Task 3", "HECKTOR_2025_Training_Task_3.csv"))
-        df = df1.merge(df2, how='outer').merge(df3, how='outer')
-
-        df = df[[c for c in df.columns if c in col.keys()]]
-        df = df.rename(columns=col, errors="raise")
-        return df
-    
-    def build_dataset(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
-
-        with open(base_path.joinpath("pickle datasets", "hecktor.pickle"), "rb") as f:
-            patients = pickle.load(f)
-
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "hecktor").iterdir():
-            if file_.name.startswith("llm"):
-                continue
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "image"
-            fts["features"] = file_.stem
-            features.append(fts)
-        features = pandas.concat(features)
-
-        # build labels
-        label = []
-        clinical = []
-        for id_, p in patients.items():
-            try:
-                rfs = p.clinical["RFS"]
-                r2y = int(rfs > 2*365)
-                r5y = int(rfs > 5*365)
-            except KeyError:
-                r2y, r5y = None, None
-
-            center = p.clinical["CenterID"]
-            center = self.center_map[center] if center in self.center_map.keys() else center
-            label.append({"patient": id_, "center": center, recurrence_2y_name: r2y, recurrence_5y_name: r5y})
-
-            # build clinical features
-            for k, v in p.clinical.items():
-                if k in self.clinical_key_mapping.keys():
-                    if k in self.clinical_encoding.keys(): # categorical feature
-                        try:
-                            v = self.clinical_encoding[k][v]
-                        except KeyError:
-                            v = None
-                    else: # numerical feature
-                        try:
-                            v = float(v)
-                        except (ValueError, TypeError):
-                            v = None
-                    clinical.append({"patient": id_, "modality": "clinical", "features": self.clinical_key_mapping[k], "name": 0, "value": v})
-
-        label = pandas.DataFrame(label)
-        features = pandas.concat([features, pandas.DataFrame(clinical)])
-        return features, label
-
-    def get_spatial_transforms():
-        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,100,0), roi_end=(500,500,300)),]
-        return tr
-
-
-class TCIA(BaseLoader):
-    def __init__(self, path):
-        super().__init__(path)
-
-    def build_patients(self, log=None):
-        data = []
-        list_of_patients =  glob.glob(os.path.join(self.path, "manifest*", "*", "*"))
-        for p in tqdm.tqdm(list_of_patients):
-            if not os.path.isdir(p):
-                continue
-
-            id = pathlib.Path(p).name
-
-            # load every DICOM data of patient folder
-            patient_data = self.parse_dicom_data(p)
-
-            # group CT with dose
-            for rtdose in filter(lambda i: isinstance(i, dicom_class.RTDOSE), patient_data):
-                done = False
-                for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
-                    if rtdose.get_FrameOfReferenceUID() == ct.get_FrameOfReferenceUID():
-                        ct.add_rtdose(rtdose, log)
-                        done = True
-                        break
-
-                if not(done) and log: log.warning(f"WARNING: RTDOSE at {rtdose.path} found no matching CT")
-
-            # group CT with struct
-            for rtstruct in filter(lambda i: isinstance(i, dicom_class.RTSTRUCT), patient_data):
-                done = False
-                for ct in filter(lambda i: isinstance(i, dicom_class.CT), patient_data):
-                    if rtstruct.get_StudyInstanceUID() == ct.get_StudyInstanceUID():
-
-                        # check for HNSCC-3DCT-RT
-                        if ct.rtstruct:
-                            dcm = pydicom.dcmread(ct.rtstruct.get_dcm_path())
-                            if dcm.get((0x0008, 0x0070)).value == "MIM Software Inc." or dcm.get((0x0008, 0x1090)).value == "MIM":
-                                # skip because current RTSTRUCT is preferable
-                                continue
-
-                        ct.add_rtstruct(rtstruct, log)
-                        done = True
-                        break
-
-                if not(done) and log: log.warning(f"WARNING: RTSTRUCT at {rtstruct.path} found no matching CT")
-
-            clinical = self.get_patient_clinical_data(id)
-            
-            p =  dicom_class.Patient(
-                patient_id=id,
-                ct=list(filter(lambda i: isinstance(i, dicom_class.CT), patient_data)),
-                cbct=list(filter(lambda i: isinstance(i, dicom_class.CBCT), patient_data)),
-                clinical=clinical)
-        
-            data.append(p)
-    
-        return data
-    
-    @abstractmethod
-    def get_patient_clinical_data(self, patient_id):
-        pass
-
-
-class HeadNeckCTAtlas(TCIA):
-    def __init__(self, path):
-        super().__init__(path)
-
-    def get_patient_clinical_data(self, patient_id):
-        clinical = pandas.read_excel(os.path.join(self.path, "HNSCC-MDA-Data_update_20240514.xlsx"), sheet_name="HNSCC-MDA-Data_update")
-        clinical = clinical[clinical["TCIA PatientID"] == patient_id].to_dict('records')
-        if clinical: return clinical[0]
-        else: return {}
-
-    def generate_clinical_df(self):
-        col = {
-            "TCIA PatientID": "Patient ID number randomly assigned to each patient prior to anonymizing the DICOM PHI tag (0010,0020)",
-            "Sex": "Patient sex, male or female",
-            "Age": "Patient age, years",
-            "Site": "Primary cancer subsite. CUP = cancer of unknown primary",
-            "Histology": "Cancer histopathology. SCC=squamous cell carcinoma",
-            "N": "AJCC 7th edition N stage",
-            "Stage": "AJCC 7th edition summary stage",
-            "RT Total Dose (Gy)": "Total RT dose delivered during radiotherapy.",
-            "Dose/Fraction (Gy/fx)": "Dose delivered to prescription target volume (gross disease or post-operative tumor bed)",
-            "Number of Fractions": "Number of RT fractions delivered.",
-            "Smoking History": "Smoking history coded: 0=never smoker, 1= fewer than 10 pack-years, 2= 10 or more pack-years",
-            "Current Smoker": "Current smoker: 0=no, 1=yes",
-            "BMI start treat (kg/m2)": "Patient BMI at the start of radiotherapy.",
-        }
-
-        df = pandas.read_excel(os.path.join(self.path, "HNSCC-MDA-Data_update_20240514.xlsx"), sheet_name="HNSCC-MDA-Data_update")
-        df = df[[c for c in df.columns if c in col.keys()]]
-        df = df.rename(columns=col, errors="raise")
-        return df
-    
-    def build_dataset(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
-
-        with open(base_path.joinpath("pickle datasets", "headneckctatlas.pickle"), "rb") as f:
-            patients = pickle.load(f)
-
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "headneckctatlas").iterdir():
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.stem
-            features.append(fts)        
-        features = pandas.concat(features)
-
-        # build labels
-        label = []
-        for id_, p in patients.items():
-            try:
-                rfs = p.clinical["Disease-free interval (months)"]
-                r2y = int(rfs > 2*12)
-                r5y = int(rfs > 5*12)
-            except KeyError:
-                r2y, r5y = None, None
-
-            label.append({"patient": id_, "center": "MDA", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
-        label = pandas.DataFrame(label)
-        return features, label
-
-    def get_spatial_transforms():
-        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,50,0), roi_end=(512,512,350)),]
-        return tr
-
-
-class HeadNeckPETCT(TCIA):
-    def __init__(self, path):
-        super().__init__(path)
-
-        self.clinical_key_mapping = {
-            "Sex": "sex",
-            "Age": "age",
-            "Primary Site": "localisation",
-            "M-stage": "metastasis",
-            "TNM group stage": "stage",
-            # "HPV status": "hpv",
-            "Therapy": "treatment",
-            "Surgery": "surgery",
-            "dose": "dose",
-        }
-
-        self.clinical_encoding = {
-            "Sex": {"M": 1, "F": 0, "m": 1},
-
-            "Primary Site": {"Oropharynx": 0},
-
-            "M-stage": {"M0": 0},
-
-            "TNM group stage": {"stage III": 3, "stage IIB": 2, "stage IVA": 4, "stage IV": 4, 
-                                "stage IVB": 4, "stage II": 2, "stage I": 1, "Stade II": 2, 
-                                "Stade III": 3, "Stade IVA": 4, "Stade I": 1, "Stade IVB": 4, 
-                                "Stage III": 3, "Stage IVA": 4, "Stage IIB": 2, "Stage II": 2, 
-                                "Stage IV": 4, "StageII": 2},
-            
-            "HPV status": {"-": 0, "+": 1},
-
-            "Therapy": {"chemo radiation": 1, "radiation": 0},
-
-            "Surgery": {"NO": 0, "YES": 1},
-        }
-
-    def get_patient_clinical_data(self, patient_id):
-        clinical = []
-        for i in ("HGJ", "CHUS", "HMR", "CHUM"):
-            df = pandas.read_excel(os.path.join(self.path, "INFOclinical_HN_Version2_30may2018.xlsx"), sheet_name=i)
-            df["center"] = i
-            clinical.append(df)
-        clinical = pandas.concat(clinical)
-        clinical = clinical[clinical["Patient #"] == patient_id].to_dict('records')
-        if clinical: return clinical[0]
-        else: return {}
-
-    def generate_clinical_df(self):
-        col = {
-            "Patient #": "Patient #",
-            "Sex": "Sex",
-            "Age": "Age",
-            "Primary Site": "Primary Site",
-            "N-stage": "N-stage",
-            "TNM group stage": "TNM group stage",
-            "HPV status": "HPV status",
-        }
-
+        # one hot encode categorical clinical variables
+        X_clinical = self.X[self.X["modality"] == "clinical"]
         df = []
-        for i in ("HGJ", "CHUS", "HMR", "CHUM"):
-            df__ = pandas.read_excel(os.path.join(self.path, "INFOclinical_HN_Version2_30may2018.xlsx"), sheet_name=i)
-            df.append(df__)
-        df = pandas.concat(df)
-        df = df[[c for c in df.columns if c in col.keys()]]
-        df = df.rename(columns=col, errors="raise")
-        return df
-    
-    def build_dataset(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
-
-        with open(base_path.joinpath("pickle datasets", "headneckpetct.pickle"), "rb") as f:
-            patients = pickle.load(f)
-
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "headneckpetct").iterdir():
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.stem
-            features.append(fts)        
-        features = pandas.concat(features)
-
-        # build labels
-        label = []
-        clinical = []
-        for id_, p in patients.items():
-            diag_endrt_dt = p.clinical["Time – diagnosis to end treatment (days)"]
-            diag_lr_dt = p.clinical["Time – diagnosis to LR (days)"]
-            diag_dm_dt = p.clinical["Time – diagnosis to DM (days)"]
-            diag_death = p.clinical["Time – diagnosis to Death (days)"]
-            diag_lastfollow_dt = p.clinical["Time – diagnosis to last follow-up (days)"]
-
-            if pandas.isna(diag_endrt_dt):
-                r2y = None
-                r5y = None
-            elif pandas.notna(diag_lr_dt) or pandas.notna(diag_dm_dt):
-                valid_dt = tuple(filter(pandas.notna, (diag_lr_dt, diag_dm_dt)))
-                endrt_event_dt = min(map(lambda i: i - diag_endrt_dt, valid_dt))
-                r2y = int(endrt_event_dt > 2*365)
-                r5y = int(endrt_event_dt > 5*365)
-            elif pandas.notna(diag_death) or pandas.notna(diag_lastfollow_dt):
-                valid_dt = tuple(filter(pandas.notna, (diag_death, diag_lastfollow_dt)))
-                endrt_event_dt = min(map(lambda i: i - diag_endrt_dt, valid_dt))
-                r2y = 1 if endrt_event_dt > 2*365 else None
-                r5y = 1 if endrt_event_dt > 5*365 else None
-            else:
-                r2y = None
-                r5y = None
-
-            label.append({"patient": id_, "center": p.clinical['center'], recurrence_2y_name: r2y, recurrence_5y_name: r5y})
-
-            # build clinical features
-            for k, v in p.clinical.items():
-                if k in self.clinical_key_mapping.keys():
-                    if k in self.clinical_encoding.keys(): # categorical feature
-                        try:
-                            v = self.clinical_encoding[k][v]
-                        except KeyError:
-                            v = None
-                    else: # numerical feature
-                        try:
-                            v = float(v)
-                        except (ValueError, TypeError):
-                            v = None
-                    clinical.append({"patient": id_, "modality": "clinical", "features": self.clinical_key_mapping[k], "name": 0, "value": v})
-        
-        features = pandas.concat([features, pandas.DataFrame(clinical)])
-        label = pandas.DataFrame(label)
-        return features, label
-
-    def build_patients(self, log=None):
-        patients = super().build_patients(log)
-        print("calculating GTV dose...")
-        for p in tqdm.tqdm(patients, ncols=50):
-            for ct in p.ct:
-                dose = ct.rtdose.get_GTV_dose() if ct.rtdose else None
-                p.clinical.update({"dose": dose})
-        return patients
-
-    def get_spatial_transforms():
-        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,100,0), roi_end=(512,512,350)),]
-        return tr
-
-
-class HNSCC3DCTRT(TCIA):
-    def __init__(self, path):
-        super().__init__(path)
-        self.CLINICAL_MAPPING = {
-            # SEX
-            "M": 1,
-            "F": 2,
-
-            # CANCER STAGING
-            'I': 1,
-            'II': 2,
-            'IIA': 2,
-            'IIB': 2,
-            'III': 3,
-            'IVA': 4,
-
-            # ECOG
-            'ECOG 0': 0,
-            'ECOG 0-1': 0,
-            'ECOG 0-2': 0,
-            'ECOG 0-3': 0,
-            'ECOG 1': 1,
-            'ECOG 1-2': 1,
-        }
-
-    def get_patient_clinical_data(self, patient_id):
-        clinical = pandas.read_excel(os.path.join(self.path, "TCIA 3-6M CTCAE grade.xlsx"))
-        clinical = clinical[clinical["HN_P"].astype(int) == int(re.findall("\d+", patient_id)[0])].to_dict('records')
-        if clinical: return clinical[0]
-        else: return {}
-
-
-class OropharyngealRadiomicsOutcomes(TCIA):
-    def __init__(self, path):
-        super().__init__(path)
-
-    def get_patient_clinical_data(self, patient_id):
-        clinical = pandas.read_csv(os.path.join(self.path, "Radiomics_Outcome_Prediction_in_OPC_ASRM_corrected.csv"))
-        clinical = clinical[clinical["TCIA Radiomics dummy ID of To_Submit_Final"] == patient_id].to_dict('records')
-        if clinical: return clinical[0]
-        else: return {}
-
-    def generate_clinical_df(self):
-        col = {
-            "TCIA Radiomics dummy ID of To_Submit_Final": "TCIA Radiomics dummy ID of To_Submit_Final",
-            "Gender": "Gender",
-            "Age at Diag": "Age at Diag",
-            "Smoking status": "Smoking status",
-            "Smoking status (Packs-Years)": "Smoking status (Packs-Years)",
-            "Cancer subsite of origin": "Cancer subsite of origin",
-            "HPV Status": "HPV Status",
-            "N-category": "N-category",
-            "AJCC Stage (7th edition)": "AJCC Stage (7th edition)",
-            "Total prescribed Radiation treatment dose": "Total prescribed Radiation treatment dose",    
-        }
-
-        df = pandas.read_csv(os.path.join(self.path, "Radiomics_Outcome_Prediction_in_OPC_ASRM_corrected.csv"))
-
-        df = df[[c for c in df.columns if c in col.keys()]]
-        df = df.rename(columns=col, errors="raise")
-        return df
-    
-    def build_dataset(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
-
-        with open(base_path.joinpath("pickle datasets", "oropharyngealradiomicsoutcomes.pickle"), "rb") as f:
-            patients = pickle.load(f)
-
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "oropharyngealradiomicsoutcomes").iterdir():
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.stem
-            features.append(fts)        
-        features = pandas.concat(features)
-
-        # build labels
-        label = []
-        for id_, p in patients.items():
-            try:
-                if any([p.clinical[k] == "No" for k in ["Local control", "Regional control", "Freedom from distant metastasis"]]):
-                    control_duration_pairs = [
-                        (p.clinical["Local control"], p.clinical["Local control_duration of Merged updated ASRM V2"]),
-                        (p.clinical["Regional control"], p.clinical["Regional control_duration of Merged updated ASRM V2"]),
-                        (p.clinical["Freedom from distant metastasis"], p.clinical["Freedom from distant metastasis_duration of Merged updated ASRM V2"]),
-                        ]
-                    control_duration_pairs = tuple(filter(lambda i: i[0] == "No" , control_duration_pairs))
-                    endrt_event_dt = min(map(lambda i: i[1] - p.clinical["Radiation Treatment_duration"], control_duration_pairs))
-                    r2y = int(endrt_event_dt > 2*365)
-                    r5y = int(endrt_event_dt > 5*365)
-                elif p.clinical["Relapse-free survival"] == "Yes":
-                    endrt_event_dt = p.clinical["Days to last FU"] - p.clinical["Radiation Treatment_duration"]
-                    r2y = 1 if endrt_event_dt > 2*365 else None
-                    r5y = 1 if endrt_event_dt > 5*365 else None
-                else:
-                    r2y = None
-                    r5y = None
-            except KeyError:
-                r2y = None
-                r5y = None
-
-            label.append({"patient": id_, "center": "MDA", recurrence_2y_name: r2y, recurrence_5y_name: r5y})
-        label = pandas.DataFrame(label)
-        return features, label
-
-    def get_spatial_transforms():
-        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]
-        return tr
-
-
-class QINHEADNECK(TCIA):
-    def __init__(self, path):
-        super().__init__(path)
-
-    def get_patient_clinical_data(self, patient_id):
-        df1 = pandas.read_excel(os.path.join(self.path, "Batch_01-and-Batch_02-Clinical-Data_aug242020.xlsx"), header=0, sheet_name="uiowa_clinical_data_batch1_aug2")
-        df2 = pandas.read_excel(os.path.join(self.path, "Batch_01-and-Batch_02-Clinical-Data_aug242020.xlsx"), header=0, sheet_name="uiowa_clinical_data_batch2_aug2")
-        clinical = pandas.concat((df1, df2)).drop(index=0)
-        clinical = clinical[clinical["PatientID"] == patient_id].to_dict('records')
-        if clinical: return clinical[0]
-        else: return {}
-
-    def generate_clinical_df(self):
-        col = {
-            "PatientID": "PatientID",
-            "Patient's Birth Date": "Patient's age",
-            "Patient's Sex": "Patient's Sex",
-            "Patient's Weight": "Patient's Weight",
-            "Patient's Height": "Patient's Height",
-            "History of Diabetes Mellitus": "History of Diabetes Mellitus",
-            "Alcohol consumption": "Alcohol consumption",
-            "Tobacco Smoking Behavior": "Tobacco Smoking Behavior",
-            "N Stage": "N Stage",
-            "Tumor staging": "Tumor staging",
-            "Primary tumor site": "Primary tumor site",
-            "Radiotherapy Procedure, Total radiation dose delivered": "Radiotherapy Procedure, Total radiation dose delivered",
-            "Radiotherapy Procedure, Radiation dose per fraction": "Radiotherapy Procedure, Radiation dose per fraction",
-        }
-
-        df1 = pandas.read_excel(os.path.join(self.path, "Batch_01-and-Batch_02-Clinical-Data_aug242020.xlsx"), header=0, sheet_name="uiowa_clinical_data_batch1_aug2")
-        df2 = pandas.read_excel(os.path.join(self.path, "Batch_01-and-Batch_02-Clinical-Data_aug242020.xlsx"), header=0, sheet_name="uiowa_clinical_data_batch2_aug2")
-        df = pandas.concat((df1, df2)).drop(index=0)
-
-        # convert birth date to age based on diagnostic date
-        df["Patient's Birth Date"] = pandas.to_datetime(df["Diagnositic Procedure, Biopsy, Date of procedure"]).dt.year - df["Patient's Birth Date"]
-
-        df = df[[c for c in df.columns if c in col.keys()]]
-        df = df.rename(columns=col, errors="raise")
-        return df
-    
-    def build_dataset(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
-
-        with open(base_path.joinpath("pickle datasets", "qinheadneck.pickle"), "rb") as f:
-            patients = pickle.load(f)
-
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "qinheadneck").iterdir():
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.stem
-            features.append(fts)        
-        features = pandas.concat(features)
-
-        # build labels
-        label = []
-        for id_, p in patients.items():
-            try:
-                rtend = p.clinical["Radiotherapy Procedure, Date treatment stopped"]
-                if pandas.isna(rtend):
-                    r2y = None
-                    r5y = None
-                else:
-                    try:
-                        if pandas.notna(p.clinical["Date of cancer recurrence"]):
-                            endrt_event_dt = (p.clinical["Date of cancer recurrence"] - rtend).days
-                            r2y = int(endrt_event_dt > 2*365)
-                            r5y = int(endrt_event_dt > 5*365)
-                        else:
-                            endrt_event_dt = (p.clinical["Follow-up visit date"] - rtend).days
-                            r2y = 1 if endrt_event_dt > 2*365 else None
-                            r5y = 1 if endrt_event_dt > 5*365 else None
-                    except (KeyError, TypeError):
-                        r2y = None
-                        r5y = None
-            except KeyError:
-                r2y = None
-                r5y = None
-
-            label.append({"patient": id_, 
-                          "center": "UIHC", # University of Iowa Hospital and Clinics
-                          recurrence_2y_name: r2y, 
-                          recurrence_5y_name: r5y})
-        label = pandas.DataFrame(label)
-        return features, label
-
-    def get_spatial_transforms():
-        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]
-        return tr
-
-
-class RADCURE(TCIA):
-    def __init__(self, path):
-        super().__init__(path)
-
-        self.clinical_key_mapping = {
-            "Sex": "sex",
-            "ECOG PS": "ecog",
-            # "Smoking Status": "smoking",
-            "Stage": "stage",
-            # "HPV": "hpv",
-            "Tx Modality": "treatment",
-            "Age": "age",
-            "Dose": "dose",
-            "Ds Site": "localisation",
-            "METASTASIS": "metastasis",
-        }
-
-        self.clinical_encoding = {
-            "Sex": {"Female": 0, "Male": 1},
-            
-            "ECOG PS": {"ECOG 0": 0, "ECOG 2": 1, "ECOG 1": 0, "ECOG 4": 3, "ECOG 3": 2, "ECOG-Pt 2": 1, 
-                        "ECOG 0-1": 0, "ECOG-Pt 0": 0, "ECOG-Pt 1": 0},
-            
-            "Smoking Status": {"Ex-smoker": 1, "Non-smoker": 0, "Current": 2},
-            
-            "Stage": {"IVB": 4, "I": 1, "IVA": 4, "III": 3, "II": 2, "IV": 4, "IIIC": 3, "IB": 1, 
-                      "IIA": 2, "IIIA": 3, "IVC": 4, "IIB": 2, "0": 0},
-            
-            "HPV": {"Yes, Negative": 0, "Yes, positive": 1},
-            
-            "Tx Modality": {"RT alone": 0, "ChemoRT": 1, "ChemoRT ": 1, "Postop RT alone": 0},
-
-            "Ds Site": {"Oropharynx": 0},
-
-            "METASTASIS": {"M0": 0, "MX": None, "M1": 1},
-        }
-
-    def get_patient_clinical_data(self, patient_id):
-        clinical = pandas.read_excel(os.path.join(self.path, "RADCURE_Clinical_v04_20241219 (1).xlsx"))
-        clinical = clinical[clinical["patient_id"] == patient_id].to_dict('records')
-        if clinical: return clinical[0]
-        else: return {}
-
-    def generate_clinical_df(self):
-        col = {
-            "patient_id": "Patient ID number randomly assigned to each patient prior to anonymizing the DICOM PHI tag (0010,0020)",
-            "Age": "Patient age, years",
-            "Sex": "Patient sex, male or female",
-            "ECOG PS": "ECOG Performance status scale - assessment of patient's functional status;GRADE	ECOG PERFORMANCE STATUS;0= Fully active, able to carry on all pre-disease performance without restriction;1=Restricted in physically strenuous activity but ambulatory and able to carry out work of a light or sedentary nature, e.g., light house work, office work;2=Ambulatory and capable of all selfcare but unable to carry out any work activities; up and about more than 50% of waking hours;3=Capable of only limited selfcare; confined to bed or chair more than 50% of waking hours;4=Completely disabled; cannot carry on any selfcare; totally confined to bed or chair;5=Dead",
-            "Smoking PY": "Number of packs smoked in a year",
-            "Smoking Status": "Smoking status at first consultation:Current smoker, ex-smoker, non-smoker",
-            "Ds Site": "Primary cancer site",
-            "Subsite": "Primary cancer subsite",
-            "N": "AJCC 7th edition N category ",
-            "Stage": "AJCC 7th edition stage groups",
-            "Path": "Pathologic diagnosis/histology type",
-            "HPV": "Tumor HPV status determined by p16 IHC +/- HPV DNA by PCR. Blank cell indicates no data available.",
-            "Tx Modality": "How the surgery, radiation, and chemotherapy are combined - see mapping terminology",
-            "Chemo": "Yes=received concurrent chemoradiotherapy, none=did not receive concurrent chemoradiotherapy",
-            "Dose": "Total RT dose delivered during radiotherapy.",
-            "Fx": "Number of RT fractions delivered."}
-
-        df = pandas.read_excel(os.path.join(self.path, "RADCURE_Clinical_v04_20241219 (1).xlsx"))
-        df = df[[c for c in df.columns if c in col.keys()]]
-        df = df.rename(columns=col, errors="raise")
-        return df
-    
-    def build_dataset(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
-
-        with open(base_path.joinpath("pickle datasets", "radcure.pickle"), "rb") as f:
-            patients = pickle.load(f)
-
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "radcure").iterdir():
-            if file_.name.startswith("llm"):
+        for _, row in X_clinical.iterrows():
+            if not(self.inclusion_criteria_clinical_features(row)):
                 continue
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "image"
-            fts["features"] = file_.stem
-            features.append(fts)
-        features = pandas.concat(features)
-
-        # build labels
-        label = []
-        clinical = []
-        for id_, p in patients.items():
-            try:
-                # add fractions to rt start date to obtain RT end date
-                rtend = p.clinical["RT Start"].date() + datetime.timedelta(days=int(p.clinical["Fx"] / 5)*7)
-
-                event_dt = tuple(filter(pandas.notna, [p.clinical[k] for k in ["Date Local", "Date Regional", "Date Distant"]]))
-                if event_dt:
-                    event_dt = event_dt[0] if len(event_dt) == 1 else min(*event_dt)
-                    endrt_event_dt = (event_dt.date() - rtend).days
-                    r2y = int(endrt_event_dt > 2*365)
-                    r5y = int(endrt_event_dt > 5*365)
-                else:
-                    if pandas.notna(p.clinical["Last FU"]):
-                        endrt_event_dt = (p.clinical["Last FU"].date() - rtend).days
-                        r2y = 1 if endrt_event_dt > 2*365 else None
-                        r5y = 1 if endrt_event_dt > 5*365 else None
-                    else:
-                        r2y = None
-                        r5y = None
-            except ValueError:
-                r2y = None
-                r5y = None
-
-            label.append({"patient": id_, 
-                          "center": "UHN", # University Health Network
-                          recurrence_2y_name: r2y, 
-                          recurrence_5y_name: r5y})
             
-            # build clinical features
-            for k, v in p.clinical.items():
-                if k in self.clinical_key_mapping.keys():
-                    if k in self.clinical_encoding.keys(): # categorical feature
-                        try:
-                            v = self.clinical_encoding[k][v]
-                        except KeyError:
-                            v = None
-                    else: # numerical feature
-                        try:
-                            v = float(v)
-                        except ValueError:
-                            v = None
-                    clinical.append({"patient": id_, "modality": "clinical", "features": self.clinical_key_mapping[k], "name": 0, "value": v})
+            try:
+                if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
+                    max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
+                    if max_value > 1:
+                        one_hot = self.one_hot_encode(row["value"], max_value)
+                        for i, v in enumerate(one_hot):
+                            df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
+                    else:
+                        df.append(row.to_dict())
+                else:
+                    df.append(row.to_dict())
+            except (ValueError, TypeError):
+                continue
         
-        label = pandas.DataFrame(label)
-        features = pandas.concat([features, pandas.DataFrame(clinical)])
-        return features, label
+        X_clinical = pandas.DataFrame(df)
+        X_image = self.X[self.X["modality"] != "clinical"]
 
-    def get_spatial_transforms():
-        tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]
-        return tr
+        # merge modalities
+        if exp_params["modality"] == "image":
+            self.X = X_image
+        elif exp_params["modality"] == "clinical":
+            self.X = X_clinical
+        else:
+            self.X = pandas.concat([X_image, X_clinical], ignore_index=True)
 
-cohorts_map = {
-    "artix": ARTIX,
-    "hecktor": HECKTOR,
-    "headneckctatlas": HeadNeckCTAtlas,
-    "headneckpetct": HeadNeckPETCT,
-    "hnscc3dctrt": HNSCC3DCTRT,
-    "oropharyngealradiomicsoutcomes": OropharyngealRadiomicsOutcomes,
-    "qinheadneck": QINHEADNECK,
-    "radcure": RADCURE,
-}
+        # pivot dataframe and sort columns names
+        self.X = self.X.pivot(index="patient", columns=["modality", "features", "name"], values="value")
+        self.X = self.X.sort_index(axis="columns")
+
+        # set patient as index for labels dataframe and compute label column according to task
+        self.Y = self.Y.set_index("patient")        
+        self.Y["label"] = self.Y.apply(row_to_label, axis=1)
+
+        # remove patients with invalid label, missing data or uncommon between X and Y
+        invalid_label_patients = self.Y[self.Y["label"].isna()].index
+        missing_data_patients = self.X[self.X.isna().any(axis=1)].index
+        uncommon_patients = [
+            *[p for p in self.X.index if not(p in self.Y.index)],
+            *[p for p in self.Y.index if not(p in self.X.index)]
+        ]
+        remove_indices = [*invalid_label_patients, *missing_data_patients, *uncommon_patients]
+
+        # patients that are filtered but should be preserved for Cox model training 
+        # (those with missing label but available RFS time)
+        preserve_Cox_idx = self.Y[(self.Y["label"].isna()) & (self.Y["rfs_T"] != None)].index
+        preserve_Cox_idx = [i for i in preserve_Cox_idx if not(i in [*missing_data_patients, *uncommon_patients])]
+        self.Cox_X = self.X.loc[preserve_Cox_idx]
+        self.Cox_Y = self.Y.loc[preserve_Cox_idx]
+
+        # remove filtered patients from dataset
+        self.X = self.X.drop(index=remove_indices, errors="ignore")
+        self.Y = self.Y.drop(index=remove_indices, errors="ignore")
+
+        # if using loss class weighting, compute class weights
+        if self.class_weights:
+            self.cw = self.comput_class_weights()
+
+    def comput_class_weights(self, t=0.01):
+        if self.Y is None:
+            raise ValueError("self.Y must be initialized before computing class weights")
+        
+        freq = dict(self.Y['label'].value_counts())   # frequence dict
+        cw = torch.zeros(len(freq), dtype=torch.float32)
+        for i in freq.keys():   # populate values with inverse frequence
+            i = int(i)
+            cw[i] = 1 / freq[i]
+        cw = torch.softmax(cw / t, dim=0)   # apply softmax with temperature to increase heterogeneity
+        cw = (cw - cw.mean()) + 1   # center values around 1
+        return cw
+
+    def split(self, kfold=None, train_val_split=0.6, per_center=False):
+        """
+        split data into kfold train/validation/test sets
+        
+        kfold (int) number of folds
+        train_val_split (float) proportion of training data used for training (rest for validation)
+        per_center (bool) wether to split data seaparatly according to center
+        """
+
+        splitter = MultiCenterStratifiedKFold(self.Y)
+        for train_idx, val_idx, test_idx in splitter.split(kfold, train_val_split, per_center):
+            # (train data), (val data), (test data)
+            yield (self.X.loc[train_idx], self.Y.loc[train_idx]), (self.X.loc[val_idx], self.Y.loc[val_idx]), (self.X.loc[test_idx], self.Y.loc[test_idx])
+        return StopIteration
+
+    def undersampling(self, per_center=False):
+        if per_center:
+            idx = []
+            for center in self.Y["center"].unique():
+                label_counts = self.Y[self.Y["center"] == center]['label'].value_counts()
+                n = min(label_counts.values)
+                if n == 0:
+                    idx.append(self.Y[self.Y["center"] == center].index)
+                else:
+                    for i in label_counts.keys():
+                        idx.append(np.random.choice(self.Y[(self.Y["center"] == center) & (self.Y["label"] == i)].index, size=n, replace=False))
+            idx = np.concatenate(idx, axis=0)
+        else:
+            label_counts = self.Y['label'].value_counts()
+            n = min(label_counts.values)
+            idx = [np.random.choice(self.Y[self.Y["label"] == i].index, size=n, replace=False) for i in label_counts.keys()]
+            idx = np.concatenate(idx, axis=0)
+        self.X = self.X.loc[idx]
+        self.Y = self.Y.loc[idx]
+
+    def normalize_image_features(self, normalizer=None):
+        if isinstance(normalizer, Normalizer):
+            self.X.loc[:, ["image"]] = normalizer.transform(self.X.loc[:, ["image"]])
+        else:
+            normalizer = Normalizer(normalizer)
+            self.X.loc[:, ["image"]] = normalizer.fit_transform(self.X.loc[:, ["image"]])
+            return normalizer
+        
+    def normalize_clinical_features(self):
+        if "age" in self.X.columns.get_level_values("features"):
+            self.X.loc[:, ("clinical", "age")] = self.X.loc[:, ("clinical", "age")].values / 100.
+        if "dose" in self.X.columns.get_level_values("features"):
+            self.X.loc[:, ("clinical", "dose")] = self.X.loc[:, ("clinical", "dose")].values / 70.
+
+    def get_random_batch(self, n, sample_weight=False):
+        """
+        get random batch taking into account centers equality
+        """
+        if self.uniform_sampling:
+            centers = self.Y["center"].unique()
+            n_per_center = math.ceil(n / len(centers))
+            idx = []
+            for c in centers:
+                indices = self.Y[self.Y["center"] == c].index
+                # take random sample as min between center size and batch/centers, otherwise error of sampling
+                idx.append(np.random.choice(indices, size=min(len(indices), n_per_center), replace=False))
+            idx = list(chain.from_iterable(idx))[:n]
+        else:
+            idx = np.random.choice(self.X.index, size=n, replace=False)
+        
+        x = self.X.loc[idx]
+        y = self.Y.loc[idx]
+
+        x = {m: {
+                k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()
+            } for m in x.columns.get_level_values("modality").unique()}
+        y = torch.tensor(y["label"].values)
+
+        if sample_weight:
+            cw = self.cw[y.to(dtype=torch.long)]
+            return x, y, cw
+        else:
+            return x, y
+    
+    def get_random_batch_posneg(self, n):
+        x_pos = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 1].index, size=n)]
+        x_neg = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 0].index, size=n)]
+
+        x_pos = {m: {
+                k: torch.tensor(x_pos[(m, k)].values, dtype=torch.float32) for k in x_pos.columns.get_level_values("features")[x_pos.columns.get_level_values("modality") == m].unique()
+            } for m in x_pos.columns.get_level_values("modality").unique()}
+        
+        x_neg = {m: {
+                k: torch.tensor(x_neg[(m, k)].values, dtype=torch.float32) for k in x_neg.columns.get_level_values("features")[x_neg.columns.get_level_values("modality") == m].unique()
+            } for m in x_neg.columns.get_level_values("modality").unique()}
+        
+        return x_pos, x_neg
+    
+    def batch_iterator(self, batch_size, sample_weight=False):
+        for idx in range(0, len(self.Y), batch_size):   # handle case where dataset smaller than batch size
+            indices = self.Y.index[idx:idx+batch_size]
+            x = self.X.loc[indices]
+            y = self.Y.loc[indices]
+
+            x_ = {}
+            for m in x.columns.get_level_values("modality").unique():
+                if m == "image":
+                    x_.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
+                else:
+                    x_.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
+            x = x_
+            
+            y = torch.tensor(y["label"].values)
+
+            if sample_weight:
+                cw = self.cw[y.to(dtype=torch.long)]
+            else:
+                cw = None
+
+            yield x, y, cw
+        return StopIteration
+
+
+class CoxLoader:
+    def __init__(self, X, Y, strategy="1v1"):
+        self.X = X
+        self.Y = Y
+        self.strategy = strategy
+
+    def __len__(self):
+        if self.strategy == "1v1":
+            return len(self.neg_idx)
+        else:
+            return len(self.valid_idx)
+
+    def prepare_data(self, task=None):
+        if self.strategy == "1v1" and task is None:
+            raise ValueError("task argument must be provided for 1v1 strategy")
+        
+        if self.strategy == "1v1":
+            if task == recurrence_2y_name:
+                T = 2
+            elif task == recurrence_5y_name:
+                T = 5
+            else:
+                raise ValueError(f"task {task} not valid. Valid ones are [{recurrence_2y_name}, {recurrence_5y_name}]")
+            
+            self.pos_idx = self.Y[self.Y["rfs_T"] >= T*365].index
+            self.neg_idx = self.Y[(self.Y["rfs_T"] < T*365) & (self.Y["rfs_delta"] == 1)].index
+
+            if len(self.pos_idx) == 0 or len(self.neg_idx) == 0:
+                raise ValueError(f"No positive or negative sample for Cox pre-training with {task} task. Consider changing task or strategy.")
+            
+            if len(self.pos_idx) != len(self.neg_idx):
+                n = min(len(self.pos_idx), len(self.neg_idx))
+                self.pos_idx = np.random.choice(self.pos_idx, size=n, replace=False)
+                self.neg_idx = np.random.choice(self.neg_idx, size=n, replace=False)
+        else:
+            self.valid_idx = self.Y[self.Y["rfs_delta"] == 1].index        
+
+    def batch_iterator(self, batch_size):
+        def dataframe_to_tensor(x):
+            x_ = {}
+            for m in x.columns.get_level_values("modality").unique():
+                if m == "image":
+                    x_.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
+                else:
+                    x_.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
+            return x_
+        
+        if self.strategy == "1v1":
+            self.pos_idx = np.random.permutation(self.pos_idx)
+            self.neg_idx = np.random.permutation(self.neg_idx)
+            pairs = list(zip(self.pos_idx, self.neg_idx))
+            for idx in range(0, len(pairs), batch_size):   # handle case where dataset smaller than batch size
+                neg, pos = zip(*pairs[idx : idx + batch_size])
+                neg = dataframe_to_tensor(self.X.loc[list(neg)])
+                pos = dataframe_to_tensor(self.X.loc[list(pos)])
+                yield neg, pos
+        else:
+            idx = np.random.choice(self.valid_idx, size=batch_size, replace=False)
+            neg = dataframe_to_tensor(self.X.loc[idx])
+            pos = []
+            for i in idx:
+                pos_idx_i = self.Y[self.Y["delta_T"] > self.Y.loc[i, "delta_T"]].index
+                pos.append(dataframe_to_tensor(self.X.loc[pos_idx_i]))
+            yield neg, pos
+        return StopIteration
