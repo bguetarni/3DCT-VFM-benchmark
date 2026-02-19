@@ -12,10 +12,8 @@ import torch
 import torch.nn.functional as F
 import coolname
 
-from classifiers import Attention, Concat, GatedModality, FFN
-from classifiers import CoxModel, Classifier
+from classifiers import Attention, Concat, GatedModality, FFN, CoxModel, Classifier
 from dataloader import DataLoader, CoxLoader
-from dataloader import recurrence_2y_name, recurrence_5y_name
 
 
 def zero_division(num, den):
@@ -96,9 +94,11 @@ def cox_pretrain(backbone, X, Y, exp_params, device, epsilon=1e-5, **kwargs):
         X = pandas.concat([X, kwargs["cox_X"]], axis=0)
         Y = pandas.concat([Y, kwargs["cox_Y"]], axis=0)
 
+    # dataloader
     loader = CoxLoader(X, Y, strategy=exp_params["cox_strategy"])
     loader.prepare_data(exp_params["task"])
 
+    # model : backbone + linear layer
     model = CoxModel(backbone, exp_params["cox_strategy"])
     model.to(device)
     model.train()
@@ -111,6 +111,7 @@ def cox_pretrain(backbone, X, Y, exp_params, device, epsilon=1e-5, **kwargs):
     else:
         opt = torch.optim.SGD(model.parameters(), weight_decay=0.1)
     
+    # create learning rate scheduler (cosine annealing with warmup)
     total_steps = int(params["epoch"] * np.ceil(len(loader) / params["batch_size"]))
     warmup = params["optimizer"]["warmup"] / params["epoch"]
     div_factor = float(params["optimizer"]["max_lr"]) / float(params["optimizer"]["initial_lr"])
@@ -389,7 +390,7 @@ if __name__ == "__main__":
     parser.add_argument('--cox_pretraining', action='store_true', help="whether to first pre-train using Cox like task before fine-tuning on classification task")
     parser.add_argument('--cox_strategy', default="1v1", choices=["1v1", "1vN"], help="which Cox pre-training strategy to use: 1v1 (train on pairs of one positive and one negative samples) or 1vN (train on batches with multiple positive and negative samples using Cox partial likelihood loss)")
     parser.add_argument('--modality', type=str, required=True, choices=["both", "image", "clinical"],  help="which modality to use")
-    parser.add_argument('--task', type=str, required=True, choices=[recurrence_2y_name, recurrence_5y_name], help="task to train model on")
+    parser.add_argument('--task', type=str, required=True, choices=["R2y", "R5y"], help="task to train model on")
     parser.add_argument('--output', type=str, required=True, help='path to save results')    
     parser.add_argument('--extractors', type=str, default="ct-fm", help="extractors separated by comma (e.g., 'ct-fm,suprem')")
     parser.add_argument('--backbone', type=str, required=True, choices=["attention", "concat", "gated", "ffn"], help="type of backbone")

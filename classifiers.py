@@ -268,11 +268,9 @@ class CoxModel(nn.Module):
     Class to build a model to train a backbone using Cox partial likelihood loss for survival analysis. 
     Args
         backbone (BaseBackbone) backbone to use for survival analysis
-        strategy (str) strategy to use for training the model, either "1v1" or "1vM"
     """
-    def __init__(self, backbone, strategy):
+    def __init__(self, backbone):
         super().__init__()
-        self.strategy = strategy
         self.backbone = backbone
         self.head = nn.Linear(backbone.get_out_dim(), 1)
 
@@ -290,10 +288,10 @@ class Classifier(nn.Module):
         backbone (BaseBackbone) backbone to use for classification
         freeze_backbone (bool) whether to freeze backbone parameters during training
     """
-    def __init__(self, backbone, freeze_backbone=True):
+    def __init__(self, backbone, n_class=1, freeze_backbone=True):
         super().__init__()
         self.backbone = backbone
-        self.head = nn.Linear(backbone.get_out_dim(), 1)
+        self.head = nn.Linear(backbone.get_out_dim(), n_class)
 
         # freeze backbone parameters
         if freeze_backbone:
