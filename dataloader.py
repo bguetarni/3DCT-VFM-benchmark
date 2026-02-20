@@ -443,17 +443,19 @@ class CoxLoader:
             self.pos_idx = np.random.permutation(self.pos_idx)
             self.neg_idx = np.random.permutation(self.neg_idx)
             pairs = list(zip(self.pos_idx, self.neg_idx))
-            for idx in range(0, len(pairs), batch_size):   # handle case where dataset smaller than batch size
-                neg, pos = zip(*pairs[idx : idx + batch_size])
+            for idx in range(0, len(pairs), batch_size):
+                pos, neg = zip(*pairs[idx : idx + batch_size])
                 neg = dataframe_to_tensor(self.X.loc[list(neg)])
                 pos = dataframe_to_tensor(self.X.loc[list(pos)])
                 yield neg, pos
         else:
-            idx = np.random.choice(self.valid_idx, size=batch_size, replace=False)
-            neg = dataframe_to_tensor(self.X.loc[idx])
-            pos = []
-            for i in idx:
-                pos_idx_i = self.Y[self.Y["delta_T"] > self.Y.loc[i, "delta_T"]].index
-                pos.append(dataframe_to_tensor(self.X.loc[pos_idx_i]))
-            yield neg, pos
+            self.valid_idx = np.random.permutation(self.valid_idx)
+            for idx in range(0, len(self.valid_idx), batch_size):
+                idx = self.valid_idx[idx : idx + batch_size]
+                neg = dataframe_to_tensor(self.X.loc[idx])
+                pos = []
+                for i in idx:
+                    pos_idx_i = self.Y[self.Y["rfs_T"] > self.Y.loc[i, "rfs_T"]].index
+                    pos.append(dataframe_to_tensor(self.X.loc[pos_idx_i]))
+                yield neg, pos
         return StopIteration
