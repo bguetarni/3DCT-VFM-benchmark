@@ -9,8 +9,6 @@ from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
 from datasets import ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, QINHEADNECK, OropharyngealRadiomicsOutcomes, RADCURE
 from datasets import CATEGORICAL_CLINICAL_VARIABLES
 
-recurrence_2y_name = "R2y"
-recurrence_5y_name = "R5y"
 
 class Normalizer:
     def __init__(self, method=None):
@@ -177,12 +175,12 @@ class DataLoader:
         """
 
         def row_to_label(row):
-            if task == recurrence_2y_name:
+            if task == "rfs_2":
                 T = 2
-            elif task == recurrence_5y_name:
+            elif task == "rfs_5":
                 T = 5
             else:
-                raise ValueError(f"task {task} not valid. Valid ones are [{recurrence_2y_name}, {recurrence_5y_name}]")
+                raise ValueError(f"task {task} not valid. Valid ones are [{"rfs_2"}, {"rfs_5"}]")
 
             if row["rfs_T"] is None:
                 return None
@@ -409,12 +407,12 @@ class CoxLoader:
             raise ValueError("task argument must be provided for 1v1 strategy")
         
         if self.strategy == "1v1":
-            if task == recurrence_2y_name:
+            if task == "rfs_2":
                 T = 2
-            elif task == recurrence_5y_name:
+            elif task == "rfs_5":
                 T = 5
             else:
-                raise ValueError(f"task {task} not valid. Valid ones are [{recurrence_2y_name}, {recurrence_5y_name}]")
+                raise ValueError(f"task {task} not valid. Valid ones are [{"rfs_2"}, {"rfs_5"}]")
             
             self.pos_idx = self.Y[self.Y["rfs_T"] >= T*365].index
             self.neg_idx = self.Y[(self.Y["rfs_T"] < T*365) & (self.Y["rfs_delta"] == 1)].index
@@ -429,7 +427,7 @@ class CoxLoader:
         else:
             self.valid_idx = self.Y[self.Y["rfs_delta"] == 1].index        
 
-    def batch_iterator(self, batch_size):
+    def batch_iterator(self, batch_size, skip_singleton_batch=True):
         def dataframe_to_tensor(x):
             x_ = {}
             for m in x.columns.get_level_values("modality").unique():
@@ -445,13 +443,18 @@ class CoxLoader:
             pairs = list(zip(self.pos_idx, self.neg_idx))
             for idx in range(0, len(pairs), batch_size):
                 pos, neg = zip(*pairs[idx : idx + batch_size])
-                neg = dataframe_to_tensor(self.X.loc[list(neg)])
-                pos = dataframe_to_tensor(self.X.loc[list(pos)])
+                neg, pos = tuple(neg), tuple(pos)
+                if skip_singleton_batch and len(neg) == 1:
+                    return StopIteration   # stop if batch size is 1 (BatchNorm error)
+                neg = dataframe_to_tensor(self.X.loc[neg])
+                pos = dataframe_to_tensor(self.X.loc[pos])
                 yield neg, pos
         else:
             self.valid_idx = np.random.permutation(self.valid_idx)
             for idx in range(0, len(self.valid_idx), batch_size):
                 idx = self.valid_idx[idx : idx + batch_size]
+                if skip_singleton_batch and len(idx) == 1:
+                    return StopIteration   # stop if batch size is 1 (BatchNorm error)
                 neg = dataframe_to_tensor(self.X.loc[idx])
                 pos = []
                 for i in idx:

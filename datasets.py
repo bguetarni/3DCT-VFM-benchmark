@@ -262,7 +262,7 @@ class HECKTOR(BaseLoader):
 
         self.clinical_key_mapping = {
             "Gender": "sex",
-            # "Performance Status": "ecog",
+            "Performance Status": "ecog",
             # "Tobacco Consumption": "smoking",
             # "Alcohol Consumption": "alcohol",
             "M-stage": "metastasis",

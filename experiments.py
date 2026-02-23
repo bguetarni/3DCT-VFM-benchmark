@@ -395,7 +395,7 @@ if __name__ == "__main__":
     parser.add_argument('--cox_pretraining', action='store_true', help="whether to first pre-train using Cox like task before fine-tuning on classification task")
     parser.add_argument('--cox_strategy', default="1v1", choices=["1v1", "1vN"], help="which Cox pre-training strategy to use: 1v1 (train on pairs of one positive and one negative samples) or 1vN (train on batches with multiple positive and negative samples using Cox partial likelihood loss)")
     parser.add_argument('--modality', type=str, required=True, choices=["both", "image", "clinical"],  help="which modality to use")
-    parser.add_argument('--task', type=str, required=True, choices=["R2y", "R5y"], help="task to train model on")
+    parser.add_argument('--task', type=str, required=True, choices=["rfs_2", "rfs_5"], help="task to train model on")
     parser.add_argument('--output', type=str, required=True, help='path to save results')    
     parser.add_argument('--extractors', type=str, default="ct-fm", help="extractors separated by comma (e.g., 'ct-fm,suprem')")
     parser.add_argument('--backbone', type=str, required=True, choices=["attention", "concat", "gated", "ffn"], help="type of backbone")
