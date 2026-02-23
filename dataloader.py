@@ -180,7 +180,7 @@ class DataLoader:
             elif task == "rfs_5":
                 T = 5
             else:
-                raise ValueError(f"task {task} not valid. Valid ones are [{"rfs_2"}, {"rfs_5"}]")
+                raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
 
             if row["rfs_T"] is None:
                 return None
@@ -412,7 +412,7 @@ class CoxLoader:
             elif task == "rfs_5":
                 T = 5
             else:
-                raise ValueError(f"task {task} not valid. Valid ones are [{"rfs_2"}, {"rfs_5"}]")
+                raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
             
             self.pos_idx = self.Y[self.Y["rfs_T"] >= T*365].index
             self.neg_idx = self.Y[(self.Y["rfs_T"] < T*365) & (self.Y["rfs_delta"] == 1)].index
@@ -443,8 +443,8 @@ class CoxLoader:
             pairs = list(zip(self.pos_idx, self.neg_idx))
             for idx in range(0, len(pairs), batch_size):
                 pos, neg = zip(*pairs[idx : idx + batch_size])
-                neg, pos = tuple(neg), tuple(pos)
-                if skip_singleton_batch and len(neg) == 1:
+                neg, pos = list(neg), list(pos)
+                if skip_singleton_batch and len(neg) < 2:
                     return StopIteration   # stop if batch size is 1 (BatchNorm error)
                 neg = dataframe_to_tensor(self.X.loc[neg])
                 pos = dataframe_to_tensor(self.X.loc[pos])
@@ -453,12 +453,14 @@ class CoxLoader:
             self.valid_idx = np.random.permutation(self.valid_idx)
             for idx in range(0, len(self.valid_idx), batch_size):
                 idx = self.valid_idx[idx : idx + batch_size]
-                if skip_singleton_batch and len(idx) == 1:
+                if skip_singleton_batch and len(idx) < 2:
                     return StopIteration   # stop if batch size is 1 (BatchNorm error)
                 neg = dataframe_to_tensor(self.X.loc[idx])
                 pos = []
                 for i in idx:
                     pos_idx_i = self.Y[self.Y["rfs_T"] > self.Y.loc[i, "rfs_T"]].index
+                    if len(pos_idx_i) < 2:
+                        return StopIteration   # stop if batch size is 1 (BatchNorm error)
                     pos.append(dataframe_to_tensor(self.X.loc[pos_idx_i]))
                 yield neg, pos
         return StopIteration
