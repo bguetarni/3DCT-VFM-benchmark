@@ -128,6 +128,7 @@ def cox_pretrain(backbone, X, Y, exp_params, device, epsilon=1e-5, **kwargs):
         for batch in loader.batch_iterator(params["batch_size"]):
             if batch is StopIteration:
                 break
+            
             neg, pos = batch
             if exp_params["cox_strategy"] == "1v1":
                 neg = model(send_to_device(neg, device))
@@ -281,7 +282,9 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                 y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
                 opt.zero_grad()
                 loss = F.binary_cross_entropy(pred, y, weight=cw)
-                if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:   # regularization loss
+
+                # regularization loss
+                if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:
                     # sample positive and nagtaives probability distributions from model
                     x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
                     x_pos = F.sigmoid(model(send_to_device(x_pos, device)))

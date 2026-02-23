@@ -231,8 +231,10 @@ class GatedModality(nn.Module, BaseBackbone):
         n_modality = len(dims)
         self.hidden_dim = hidden_dim
         self.ffn = nn.ModuleDict({m: FFN(sum(feat.values()), 3*hidden_dim, hidden_dim) if isinstance(feat, dict) else FFN(feat, 3*hidden_dim, hidden_dim) for m, feat in dims.items()})
+        self.bn = nn.BatchNorm1d(n_modality * hidden_dim)
         self.gates = nn.Linear(n_modality * hidden_dim, n_modality)
-        self.out = nn.Linear(n_modality * hidden_dim, out_dim, dropout)
+        self.out = nn.Linear(n_modality * hidden_dim, out_dim)
+        self.dropout = nn.Dropout(dropout)
 
     def save(self, path_):
         torch.save(self.state_dict(), path_)
@@ -251,9 +253,10 @@ class GatedModality(nn.Module, BaseBackbone):
         """
         modality_features = {m: self.ffn[m](torch.cat(tuple(x[m].values()), dim=-1)) if isinstance(x[m], dict) else self.ffn[m](x[m]) for m in x.keys()}
         modality_features = torch.cat(tuple(modality_features.values()), dim=-1)
+        modality_features = self.bn(modality_features)
         gates = torch.sigmoid(self.gates(modality_features))
         gated_features = modality_features * gates.repeat_interleave(self.hidden_dim, dim=-1)
-        out = self.out(gated_features)
+        out = self.out(self.dropout(gated_features))
         return out
 
     def __call__(self, input):
@@ -296,7 +299,7 @@ class Classifier(nn.Module):
         # freeze backbone parameters
         if freeze_backbone:
             for param in self.backbone.parameters():
-                param.requires_grad = False 
+                param.requires_grad = False
 
     def forward(self, x):
         return self.head(self.backbone(x))
