@@ -144,6 +144,7 @@ def cox_pretrain(backbone, X, Y, exp_params, device, epsilon=1e-5, **kwargs):
                 cox_loss = torch.mean(-torch.log(torch.exp(neg) / (pos + epsilon)))
             opt.zero_grad()
             cox_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
             opt.step()
             scheduler.step()
     
@@ -417,7 +418,11 @@ if __name__ == "__main__":
     parser.add_argument('--uniform_sampling', action='store_true', help="sample uniformly across centers for training")
     parser.add_argument('--gpu', type=str, default="", help='GPUs to use')
     args = parser.parse_args()
-
+    
+    print("Script arguments:")
+    for k, v in vars(args).items():
+        print(f"    {k}: {v}")
+    
     main(args)
 
     print("done.")

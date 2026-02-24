@@ -365,9 +365,13 @@ class DataLoader:
         
         return x_pos, x_neg
     
-    def batch_iterator(self, batch_size, sample_weight=False):
+    def batch_iterator(self, batch_size, sample_weight=False, skip_singleton_batch=True):
         for idx in range(0, len(self.Y), batch_size):   # handle case where dataset smaller than batch size
             indices = self.Y.index[idx:idx+batch_size]
+
+            if skip_singleton_batch and len(indices) < 2:
+                return StopIteration   # stop if batch size is 1 (BatchNorm error)
+            
             x = self.X.loc[indices]
             y = self.Y.loc[indices]
 
