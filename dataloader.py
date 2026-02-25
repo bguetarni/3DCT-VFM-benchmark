@@ -429,7 +429,7 @@ class CoxLoader:
                 self.pos_idx = np.random.choice(self.pos_idx, size=n, replace=False)
                 self.neg_idx = np.random.choice(self.neg_idx, size=n, replace=False)
         else:
-            self.valid_idx = self.Y[self.Y["rfs_delta"] == 1].index        
+            self.valid_idx = self.Y[self.Y["rfs_delta"] == 1].index
 
     def batch_iterator(self, batch_size, skip_singleton_batch=True):
         def dataframe_to_tensor(x):
@@ -468,3 +468,53 @@ class CoxLoader:
                     pos.append(dataframe_to_tensor(self.X.loc[pos_idx_i]))
                 yield neg, pos
         return StopIteration
+
+
+class ProtoNetLoader:
+    def __init__(self, X, Y):
+        """
+        :param X: (pandas.DataFrame) features
+        :param Y: (pandas.DataFrame) rfs data
+        """
+        self.X = X
+        self.Y = Y
+
+    def prepare_data(self, task):        
+        if task == "rfs_2":
+            T = 2
+        elif task == "rfs_5":
+            T = 5
+        else:
+            raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
+        
+        self.pos_idx = self.Y[self.Y["rfs_T"] >= T*365].index
+        self.neg_idx = self.Y[(self.Y["rfs_T"] < T*365) & (self.Y["rfs_delta"] == 1)].index
+
+        if len(self.pos_idx) == 0 or len(self.neg_idx) == 0:
+            raise ValueError(f"No positive or negative sample for Cox pre-training with {task} task. Consider changing task.")
+        
+    def get_random_batch(self, batch_size):
+        def dataframe_to_tensor(x):
+            x_ = {}
+            for m in x.columns.get_level_values("modality").unique():
+                if m == "image":
+                    x_.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
+                else:
+                    x_.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
+            return x_
+
+        # randomly shuffle data
+        self.pos_idx = np.random.permutation(self.pos_idx)
+        self.neg_idx = np.random.permutation(self.neg_idx)
+        
+        n = batch_size // 2
+
+        # queries
+        pos_queries = dataframe_to_tensor(self.X.loc[self.pos_idx[:n]])
+        neg_queries = dataframe_to_tensor(self.X.loc[self.neg_idx[:n]])
+
+        # prototypes
+        pos_proto = dataframe_to_tensor(self.X.loc[self.pos_idx[n:]].mean(axis=0).to_frame().T)
+        neg_proto = dataframe_to_tensor(self.X.loc[self.neg_idx[n:]].mean(axis=0).to_frame().T)
+
+        return (pos_queries, pos_proto), (neg_queries, neg_proto)

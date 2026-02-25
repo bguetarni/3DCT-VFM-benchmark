@@ -5,151 +5,18 @@ import argparse
 import pathlib
 import os
 import pandas
-import numpy as np
-import tqdm
-from sklearn.metrics import accuracy_score, roc_auc_score, balanced_accuracy_score, f1_score, log_loss, confusion_matrix
 import torch
-import torch.nn.functional as F
 import coolname
 
-from classifiers import Attention, Concat, GatedModality, FFN, CoxModel, Classifier
-from dataloader import DataLoader, CoxLoader
-
-
-def zero_division(num, den):
-    try:
-        if den == 0:
-            return 0
-        else:
-            return num / den
-    except TypeError:
-        return 0
+from classifiers import Attention, Concat, GatedModality, FFN, PreTrainModel, Classifier
+from dataloader import DataLoader, CoxLoader,ProtoNetLoader
+from trainer import CoxTrainer, FineTuneTrainer, ProtoNetTrainer
 
 def display_split_stats(loader):
     y = list(loader.Y["label"].values)
     stats = {int(j): y.count(j) for j in set(y)}
     for j, c in stats.items():
         print(f"\t {j}: {c} ({int(100*c/len(y))}%)")
-
-def send_to_device(x, device):
-    if isinstance(x, dict):
-        return {k: send_to_device(v, device) for k,v in x.items()}
-    elif isinstance(x, torch.Tensor):
-        return x.to(device)
-    else:
-        return torch.tensor(x).to(device)
-
-def dkl_reg_loss(std_p, std_q):
-    # see https://doi.org/10.1016/j.eswa.2021.115974
-    std_p = std_p ** 2
-    std_q = std_q ** 2
-    return 0.5 * (torch.log(std_q / std_p) + (std_p / std_q) - 1)
-
-def compute_metrics(y_pred, y_pred_proba, y):
-    cm = confusion_matrix(y, y_pred, labels=[0,1]).ravel()
-
-    # handle case where only one label in y and y_pred
-    # set all confusion matrix element to zero
-    # keeping only the element relative to class present in y
-    if len(cm) == 1:
-        count = cm[0]
-        cm = np.zeros((2,2), dtype=np.int64)
-        i = int(np.unique(y).item())
-        j = int(np.unique(y_pred).item())
-        cm[i,j] = count
-        cm = cm.ravel()
-
-    tn, fp, fn, tp = cm
-    m = {"acc": accuracy_score(y, y_pred),
-            "auc": roc_auc_score(y, y_pred_proba),
-            "balanced_accuracy": balanced_accuracy_score(y, y_pred),
-            "f1_score": f1_score(y, y_pred, zero_division=0),
-            "specificity": zero_division(tn, (tn + fp)),
-            "sensitivity": zero_division(tp, (tp + fn)),
-            "log_loss": log_loss(y, y_pred_proba, labels=[0,1])}
-    return m
-
-def eval(model, loader, batch_size, device):
-    y_pred_proba = []
-    y_pred = []
-    y_true = []
-    for batch in loader.batch_iterator(batch_size):
-        if batch is StopIteration:
-            break
-        x, y, _ = batch
-        with torch.no_grad():
-            pred_proba = model(send_to_device(x, device)).to("cpu")
-            pred_proba = F.sigmoid(pred_proba)
-            y_pred_proba.append(pred_proba.flatten())
-            y_pred.append(torch.round(pred_proba.flatten()))
-            y_true.append(y)
-    y_pred = torch.cat(y_pred, dim=0)
-    y_pred_proba = torch.cat(y_pred_proba, dim=0)
-    y_true = torch.cat(y_true, dim=0)
-    return compute_metrics(y_pred, y_pred_proba, y_true)
-
-def cox_pretrain(backbone, X, Y, exp_params, device, epsilon=1e-5, **kwargs):
-    if "cox_X" in kwargs.keys():
-        # supplementary data for Cox pre-training provided
-        X = pandas.concat([X, kwargs["cox_X"]], axis=0)
-        Y = pandas.concat([Y, kwargs["cox_Y"]], axis=0)
-
-    # dataloader
-    loader = CoxLoader(X, Y, strategy=exp_params["cox_strategy"])
-    loader.prepare_data(exp_params["task"])
-
-    # model : backbone + linear layer
-    model = CoxModel(backbone)
-    model.to(device)
-    model.train()
-
-    with open("./COX_PRETRAINING_CONFIG.yaml", "r") as f:
-        params = yaml.safe_load(f)
-
-    if params["optimizer"]["name"] == "adam":
-        opt = torch.optim.Adam(model.parameters(), weight_decay=0.1)
-    else:
-        opt = torch.optim.SGD(model.parameters(), weight_decay=0.1)
-    
-    # create learning rate scheduler (cosine annealing with warmup)
-    total_steps = int(params["epoch"] * np.ceil(len(loader) / params["batch_size"]))
-    warmup = params["optimizer"]["warmup"] / params["epoch"]
-    div_factor = float(params["optimizer"]["max_lr"]) / float(params["optimizer"]["initial_lr"])
-    final_div_factor = float(params["optimizer"]["initial_lr"]) / float(params["optimizer"]["final_lr"])
-    scheduler  = torch.optim.lr_scheduler.OneCycleLR(opt, 
-                                                     max_lr=float(params["optimizer"]["max_lr"]),
-                                                     total_steps=total_steps, 
-                                                     pct_start=warmup, 
-                                                     anneal_strategy='cos',
-                                                     div_factor=div_factor,
-                                                     final_div_factor=final_div_factor)
-    
-    for _ in tqdm.trange(params["epoch"], ncols=100):
-        for batch in loader.batch_iterator(params["batch_size"]):
-            if batch is StopIteration:
-                break
-            
-            neg, pos = batch
-            if exp_params["cox_strategy"] == "1v1":
-                neg = model(send_to_device(neg, device))
-                pos = model(send_to_device(pos, device))
-                cox_loss = torch.mean(-torch.log(torch.exp(neg) / (torch.exp(pos) + epsilon)))
-            else:
-                neg = model(send_to_device(neg, device))
-                predict_fn = lambda t: model(send_to_device(t, device))
-                exp_sum_fn = lambda t: torch.exp(t).sum(dim=0)
-                pos = map(predict_fn, pos)
-                pos = map(exp_sum_fn, pos)
-                pos = torch.stack(tuple(pos), dim=0)
-                cox_loss = torch.mean(-torch.log(torch.exp(neg) / (pos + epsilon)))
-            opt.zero_grad()
-            cox_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
-            opt.step()
-            scheduler.step()
-    
-    # send back the backbone to cpu device
-    model.to(device="cpu")
 
 def kfold_training(exp_params, data_loader, kfold, device="cpu"):
     """
@@ -233,101 +100,74 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
             
         print(f"backbone size: {backbone.get_num_params():,d}")
 
-        if args.cox_pretraining:
-            cox_X = data_loader.Cox_X.copy()
-            cox_Y = data_loader.Cox_Y.copy()
-            
-            # normalize Cox pre-training features
-            if "image" in cox_X.columns.get_level_values("modality"):
-                cox_X.loc[:, ["image"]] = norm.transform(cox_X.loc[:, ["image"]])
-            if "age" in cox_X.columns.get_level_values("modality"):
-                cox_X.loc[:, ("clinical", "age")] = cox_X.loc[:, ("clinical", "age")].values / 100.
-            if "dose" in cox_X.columns.get_level_values("modality"):
-                cox_X.loc[:, ("clinical", "dose")] = cox_X.loc[:, ("clinical", "dose")].values / 70.
-            
-            # pre-train model on Cox task (use .copy() on DataFrame to avoid modifying original data_loader which are used for each fold)
-            print("pre-training model using Cox like task...")
-            cox_pretrain(backbone, train_loader.X.copy(), train_loader.Y.copy(), exp_params, device, cox_X=cox_X, cox_Y=cox_Y)
+        if args.pretraining:
+            print(f"pre-training model using {args.pretraining}...")
+
+            match args.pretraining:
+                case "cox":
+                    # normalize Cox pre-training features
+                    cox_X = data_loader.Cox_X.copy()
+                    if "image" in cox_X.columns.get_level_values("modality"):
+                        cox_X.loc[:, ["image"]] = norm.transform(cox_X.loc[:, ["image"]])
+                    if "age" in cox_X.columns.get_level_values("modality"):
+                        cox_X.loc[:, ("clinical", "age")] = cox_X.loc[:, ("clinical", "age")].values / 100.
+                    if "dose" in cox_X.columns.get_level_values("modality"):
+                        cox_X.loc[:, ("clinical", "dose")] = cox_X.loc[:, ("clinical", "dose")].values / 70.
+                    
+                    # supplementary data for Cox pre-training provided
+                    X = pandas.concat([train_loader.X.copy(), cox_X], axis=0)
+                    Y = pandas.concat([train_loader.Y, data_loader.Cox_Y.copy()], axis=0)
+
+                    # dataloader
+                    loader = CoxLoader(X, Y, strategy=exp_params["cox_strategy"])
+                    loader.prepare_data(exp_params["task"])
+
+                    # model : backbone + linear layer
+                    pretrain_model = PreTrainModel(backbone)
+                    pretrain_model.to(device)
+                    pretrain_model.train()
+
+                    with open("./PRETRAINING_CONFIG.yaml", "r") as f:
+                        params = yaml.safe_load(f)
+                    
+                    trainer = CoxTrainer(exp_params["cox_strategy"], params["epoch"], params["batch_size"], params["optimizer"])
+                    trainer.train(pretrain_model, device, loader)
+
+                    # send backbone to cpu
+                    pretrain_model.to(device="cpu")
+                case "protonet":
+                    # dataloader
+                    loader = ProtoNetLoader(train_loader.X.copy(), train_loader.Y.copy())
+                    loader.prepare_data(exp_params["task"])
+
+                    # model : backbone + linear layer
+                    pretrain_model = PreTrainModel(backbone)
+                    pretrain_model.to(device)
+                    pretrain_model.train()
+
+                    with open("./PRETRAINING_CONFIG.yaml", "r") as f:
+                        params = yaml.safe_load(f)
+                    
+                    trainer = ProtoNetTrainer(params["n_iter"], params["batch_size"], params["optimizer"])
+                    trainer.train(pretrain_model, device, loader)
+
+                    # send backbone to cpu
+                    pretrain_model.to(device="cpu")
+                case _:
+                    raise ValueError(f"pre-training task {args.pretraining} not implemented, see pretraining argument choices")
 
         # build classifier model from backbone
-        model = Classifier(backbone)
+        binaryclassifier = Classifier(pretrain_model.backbone, freeze_backbone=exp_params["freeze_backbone"])
 
-        # define optimizer
-        if exp_params["optimizer"] == "adam":
-            opt = torch.optim.Adam(model.parameters(), lr=exp_params["lr"], weight_decay=0.1)
-        else:
-            opt = torch.optim.SGD(model.parameters(), lr=exp_params["lr"], weight_decay=0.1)
+        # train model
+        optimizer_params = {"name": exp_params["optimizer"], "lr": exp_params["lr"]}
+        trainer = FineTuneTrainer(exp_params["epoch"], exp_params["bsize"], optimizer_params, bool(exp_params["lr_scheduler"]), exp_params["class_weights"])
+        fold_train_metrics, fold_test_metrics, fold_best_state_dict = trainer.train(binaryclassifier, device, train_loader, valid_loader, test_loader)
 
-        # send model to device
-        model.to(device)
-        
-        # train/test loop
-        print("training binary classifier...")
-        for epoch in tqdm.trange(exp_params["epoch"], ncols=100):
-            
-            # =====================   train iteration   =====================
-            model.train()   # set to train mode
-
-            for batch in train_loader.batch_iterator(exp_params["bsize"], sample_weight=exp_params["class_weights"]):
-                # stop if StopIteration returned
-                if batch is StopIteration:
-                    break
-
-                x, y, cw = batch
-
-                if not(cw is None):
-                    cw = cw.to(device=device)
-
-                # compute batch loss
-                pred = F.sigmoid(model(send_to_device(x, device))).view(-1)
-                y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
-                opt.zero_grad()
-                loss = F.binary_cross_entropy(pred, y, weight=cw)
-
-                # regularization loss
-                if exp_params["mean_reg_lambda"] > 0. or exp_params["variance_reg_lambda"] > 0.:
-                    # sample positive and nagtaives probability distributions from model
-                    x_pos, x_neg = train_loader.get_random_batch_posneg(exp_params["bsize"]//2)
-                    x_pos = F.sigmoid(model(send_to_device(x_pos, device)))
-                    x_neg = F.sigmoid(model(send_to_device(x_neg, device)))
-
-                    # mean divergence regularization loss
-                    mean_loss = (0.5 - torch.mean(torch.cat((x_pos, x_neg), dim=0)))**2
-                    
-                    # variance divergence regularization loss
-                    std_pos = x_pos.std()
-                    std_neg = x_neg.std()
-                    variance_loss = dkl_reg_loss(std_pos, std_neg) + dkl_reg_loss(std_neg, std_pos)
-
-                    # add to classification loss
-                    loss += 0.5 * (exp_params["mean_reg_lambda"] * mean_loss + exp_params["variance_reg_lambda"] * variance_loss)
-
-                # param update
-                loss.backward()
-                opt.step()
-            # =========================================================================
-
-            # =====================   validation/test iteration   =====================
-            model.eval() # set to eval mode
-
-            # train/val
-            for split, loader in [("train", train_loader), ("valid", valid_loader)]:
-                metrics = eval(model, loader, exp_params["bsize"], device)
-                for m, v in metrics.items():
-                    train_metrics.append({"split": split, "metric": m, "value": v, "kfold": k, "step": epoch})
-            
-            # test
-            metrics = eval(model, test_loader, exp_params["bsize"], device)
-            for m, v in metrics.items():
-                test_metrics.append({"split": "test", "metric": m, "value": v, "kfold": k, "step": epoch})
-
-            # save checkpoint if current validation loss is lowest
-            validation_loss = pandas.DataFrame(train_metrics)
-            validation_loss = validation_loss[(validation_loss["metric"] == "log_loss") & (validation_loss["split"] == "valid") & (validation_loss["kfold"] == k)]
-            validation_loss = validation_loss["value"].values
-            if validation_loss[-1] == min(validation_loss):
-                best_state_dict.update({k: model.state_dict()})
-            # =========================================================================
+        # update logs
+        best_state_dict.update({k: fold_best_state_dict})
+        train_metrics.extend([{"fold": k, **d} for d in fold_train_metrics])
+        test_metrics.extend([{"fold": k, **d} for d in fold_test_metrics])
         
     return train_metrics, test_metrics, best_state_dict, normalizer, patients_idxes
 
@@ -393,13 +233,14 @@ if __name__ == "__main__":
                         help='name of dataset')
     parser.add_argument('--kfold', type=int, default=5, help='number of kfold cross-validation folds')
     parser.add_argument('--train_split', type=float, default=0.8, help='proportion of training data used for training (rest for validation)')
-    parser.add_argument('--cox_pretraining', action='store_true', help="whether to first pre-train using Cox like task before fine-tuning on classification task")
+    parser.add_argument('--pretraining', default=None, choices=["cox", "protonet"], help="which method to use for pre-training")
     parser.add_argument('--cox_strategy', default="1v1", choices=["1v1", "1vN"], help="which Cox pre-training strategy to use: 1v1 (train on pairs of one positive and one negative samples) or 1vN (train on batches with multiple positive and negative samples using Cox partial likelihood loss)")
     parser.add_argument('--modality', type=str, required=True, choices=["both", "image", "clinical"],  help="which modality to use")
     parser.add_argument('--task', type=str, required=True, choices=["rfs_2", "rfs_5"], help="task to train model on")
     parser.add_argument('--output', type=str, required=True, help='path to save results')    
     parser.add_argument('--extractors', type=str, default="ct-fm", help="extractors separated by comma (e.g., 'ct-fm,suprem')")
     parser.add_argument('--backbone', type=str, required=True, choices=["attention", "concat", "gated", "ffn"], help="type of backbone")
+    parser.add_argument('--freeze_backbone', action='store_true', help="freeze the backbone for binary task fine-tuning")
     parser.add_argument('--hidden_dim', type=int, default=128, help="dimension after features fusion")
     parser.add_argument('--out_dim', type=int, default=64, help="output dimension of backbone")
     parser.add_argument('--n_layer', type=int, default=1, help="number of layers in attention fusion")
@@ -408,7 +249,8 @@ if __name__ == "__main__":
     parser.add_argument('--normalizer', type=str, default="scale", choices=["scale", "minmax", "unit"], help="normalizer to pre-process data before training model")    
     parser.add_argument('--epoch', type=int, default=100, help="number of training epochs")
     parser.add_argument('--optimizer', type=str, default="adam")
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--lr_scheduler', action='store_true', help="apply scheduling to lerning rate")
     parser.add_argument('--bsize', type=int, default=1)
     parser.add_argument('--mean_reg_lambda', type=float, default=0., help="lambda parameter for mean divergence regularization loss")
     parser.add_argument('--variance_reg_lambda', type=float, default=0., help="lambda parameter for variance divergence regularization loss")
