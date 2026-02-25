@@ -296,6 +296,6 @@ class ProtoNetTrainer:
     def dist(self, a, b, type="euclidean"):
         match type:
             case "euclidean":
-                return torch.sum((a-b)**2, dim=-1)
+                return torch.sum((a-b)**2, dim=-1).sqrt()
             case _:
-                return torch.sum((a-b)**2, dim=-1)
+                return torch.sum((a-b)**2, dim=-1).sqrt()
