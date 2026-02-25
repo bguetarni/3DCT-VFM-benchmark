@@ -8,8 +8,8 @@ import pandas
 import torch
 import coolname
 
-from classifiers import Attention, Concat, GatedModality, FFN, PreTrainModel, Classifier
-from dataloader import DataLoader, CoxLoader,ProtoNetLoader
+from classifiers import Attention, Concat, GatedModality, FFN, CoxModel, Classifier
+from dataloader import DataLoader, CoxLoader, ProtoNetLoader
 from trainer import CoxTrainer, FineTuneTrainer, ProtoNetTrainer
 
 def display_split_stats(loader):
@@ -103,6 +103,9 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
         if args.pretraining:
             print(f"pre-training model using {args.pretraining}...")
 
+            with open("./PRETRAINING_CONFIG.yaml", "r") as f:
+                params = yaml.safe_load(f)
+
             match args.pretraining:
                 case "cox":
                     # normalize Cox pre-training features
@@ -123,13 +126,10 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                     loader.prepare_data(exp_params["task"])
 
                     # model : backbone + linear layer
-                    pretrain_model = PreTrainModel(backbone)
+                    pretrain_model = CoxModel(backbone)
                     pretrain_model.to(device)
                     pretrain_model.train()
 
-                    with open("./PRETRAINING_CONFIG.yaml", "r") as f:
-                        params = yaml.safe_load(f)
-                    
                     trainer = CoxTrainer(exp_params["cox_strategy"], params["epoch"], params["batch_size"], params["optimizer"])
                     trainer.train(pretrain_model, device, loader)
 
@@ -141,30 +141,26 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                     loader.prepare_data(exp_params["task"])
 
                     # model : backbone + linear layer
-                    pretrain_model = PreTrainModel(backbone)
-                    pretrain_model.to(device)
-                    pretrain_model.train()
-
-                    with open("./PRETRAINING_CONFIG.yaml", "r") as f:
-                        params = yaml.safe_load(f)
+                    backbone.to(device)
+                    backbone.train()
                     
                     trainer = ProtoNetTrainer(params["n_iter"], params["batch_size"], params["optimizer"])
-                    trainer.train(pretrain_model, device, loader)
+                    trainer.train(backbone, device, loader)
 
                     # send backbone to cpu
-                    pretrain_model.to(device="cpu")
+                    backbone.to(device="cpu")
                 case _:
                     raise ValueError(f"pre-training task {args.pretraining} not implemented, see pretraining argument choices")
 
         # build classifier model from backbone
-        binaryclassifier = Classifier(pretrain_model.backbone, freeze_backbone=exp_params["freeze_backbone"])
+        binaryclassifier = Classifier(backbone, freeze_backbone=exp_params["freeze_backbone"])
 
         # train model
         optimizer_params = {"name": exp_params["optimizer"], "lr": exp_params["lr"]}
         trainer = FineTuneTrainer(exp_params["epoch"], exp_params["bsize"], optimizer_params, bool(exp_params["lr_scheduler"]), exp_params["class_weights"])
         fold_train_metrics, fold_test_metrics, fold_best_state_dict = trainer.train(binaryclassifier, device, train_loader, valid_loader, test_loader)
 
-        # update logs
+        # update metrics and checkpoint
         best_state_dict.update({k: fold_best_state_dict})
         train_metrics.extend([{"fold": k, **d} for d in fold_train_metrics])
         test_metrics.extend([{"fold": k, **d} for d in fold_test_metrics])

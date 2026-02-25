@@ -266,7 +266,7 @@ class GatedModality(nn.Module, BaseBackbone):
         return self.out.out_features
 
 
-class PreTrainModel(nn.Module):
+class CoxModel(nn.Module):
     """
     Class to build a model to train a backbone using Cox partial likelihood or ProtoNet loss.
     Args
@@ -275,9 +275,10 @@ class PreTrainModel(nn.Module):
     def __init__(self, backbone):
         super().__init__()
         self.backbone = backbone
+        self.head = nn.Linear(backbone.get_out_dim(), 1)
 
     def forward(self, x):   
-        return self.backbone(x)
+        return self.head(self.backbone(x))
 
     def __call__(self, input):
         return self.forward(input)

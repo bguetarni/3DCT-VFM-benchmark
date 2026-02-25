@@ -124,13 +124,12 @@ class FineTuneTrainer(BaseTrainer):
                 if not(cw is None):
                     cw = cw.to(device=device)
 
-                # compute batch loss
+                # compute batch loss and update model parameters with gradient clippping
                 pred = F.sigmoid(model(send_to_device(x, device))).view(-1)
                 y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
                 opt.zero_grad()
                 loss = F.binary_cross_entropy(pred, y, weight=cw)
-
-                # param update
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
                 loss.backward()
                 opt.step()
             # =========================================================================
@@ -267,17 +266,20 @@ class ProtoNetTrainer:
             if batch is StopIteration:
                     break
             
-            # computes queries and proto feature vectors
             (pos_queries, pos_proto), (neg_queries, neg_proto) = batch
+            
+            # computes queries feature
             pos_queries = model(send_to_device(pos_queries, device))
-            pos_proto = model(send_to_device(pos_proto, device))
             neg_queries = model(send_to_device(neg_queries, device))
-            neg_proto = model(send_to_device(neg_proto, device))
 
-            # loss batch factor
-            N = pos_queries.shape[0] + neg_queries.shape[0]
+            # computes class prototypes feature
+            proto = {m: {f: torch.cat((pos_proto[m][f], neg_proto[m][f]), dim=0) for f in pos_proto[m].keys()} if m == "image" else torch.cat((pos_proto[m], neg_proto[m]), dim=0) for m in pos_proto.keys()}
+            proto = model(send_to_device(proto, device))
+            pos_proto = proto[:1]
+            neg_proto = proto[1:]
 
             # compute total loss
+            N = pos_queries.shape[0] + neg_queries.shape[0]
             loss = 0
             for q, proto in ((pos_queries, pos_proto), (neg_queries, neg_proto)):
                 all_proto = torch.stack((pos_proto, neg_proto), dim=0)
