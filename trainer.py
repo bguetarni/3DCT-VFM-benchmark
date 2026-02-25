@@ -129,7 +129,7 @@ class FineTuneTrainer(BaseTrainer):
                 y = y.view(*pred.shape).to(device=device, dtype=torch.float32)
                 opt.zero_grad()
                 loss = F.binary_cross_entropy(pred, y, weight=cw)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.)
                 loss.backward()
                 opt.step()
             # =========================================================================
@@ -221,7 +221,7 @@ class CoxTrainer(BaseTrainer):
                     cox_loss = torch.mean(-torch.log(torch.exp(neg) / (pos + self.epsilon)))
                 opt.zero_grad()
                 cox_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.)
                 opt.step()
                 if scheduler:
                     scheduler.step()
@@ -288,7 +288,7 @@ class ProtoNetTrainer:
                 loss += (1/N) * torch.sum(-torch.log(torch.exp(-self.dist(q, proto))/(total_dist + self.epsilon)))
             opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.)
             opt.step()
             if scheduler:
                 scheduler.step()

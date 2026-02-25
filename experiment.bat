@@ -1,5 +1,5 @@
-setlocal
 @echo off
+setlocal
 call activate radiomics
 
 :: set global arguments

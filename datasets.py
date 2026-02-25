@@ -604,7 +604,7 @@ class HeadNeckPETCT(TCIA):
             # "HPV status": "hpv",
             "Therapy": "treatment",
             "Surgery": "surgery",
-            "dose": "dose",
+            # "dose": "dose",
         }
 
         self.clinical_encoding = {
