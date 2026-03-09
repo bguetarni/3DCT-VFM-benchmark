@@ -86,6 +86,9 @@ class FineTuneTrainer(BaseTrainer):
         :param device: (str, torch.device) device for model training
         :param train_loader: (DataLoader) dataloader for training data
         """
+        # set model to train mode
+        model.train()
+
         # define optimizer
         if self.optimizer_params["name"] == "adam":
             opt = torch.optim.Adam(model.parameters(), lr=self.optimizer_params["lr"], weight_decay=0.1)
@@ -179,7 +182,10 @@ class CoxTrainer(BaseTrainer):
         :param device: (str, torch.device) device for model training
         :param train_loader: (DataLoader) dataloader for training data
         """
+        # set model to train mode
+        model.train()
 
+        # define optimizer
         if self.optimizer_params["name"] == "adam":
             opt = torch.optim.Adam(model.parameters(), lr=float(self.optimizer_params["initial_lr"]), weight_decay=0.1)
         else:
@@ -201,7 +207,9 @@ class CoxTrainer(BaseTrainer):
         else:
             scheduler = None
         
+        loss = []
         for _ in tqdm.trange(self.epochs, ncols=100):
+            epoch_loss = []
             for batch in train_loader.batch_iterator(self.bsize):
                 if batch is StopIteration:
                     break
@@ -225,6 +233,9 @@ class CoxTrainer(BaseTrainer):
                 opt.step()
                 if scheduler:
                     scheduler.step()
+                epoch_loss.append(cox_loss.cpu().detach().item())
+            loss.append(np.mean(epoch_loss))
+        return loss
     
 class ProtoNetTrainer:
     def __init__(self, n_iter, bsize, optimizer_params, epsilon=1e-5, **kwargs):
@@ -241,6 +252,10 @@ class ProtoNetTrainer:
         :param device: (str, torch.device) device for model training
         :param train_loader: (DataLoader) dataloader for training data
         """
+        # set model to train mode
+        model.train()
+
+        # define optimizer
         if self.optimizer_params["name"] == "adam":
             opt = torch.optim.Adam(model.parameters(), lr=float(self.optimizer_params["initial_lr"]), weight_decay=0.1)
         else:
@@ -261,6 +276,7 @@ class ProtoNetTrainer:
         else:
             scheduler = None
         
+        loss = []
         for _ in tqdm.trange(self.n_iter, ncols=100):
             batch = train_loader.get_random_batch(self.bsize)
             if batch is StopIteration:
@@ -280,21 +296,23 @@ class ProtoNetTrainer:
 
             # compute total loss
             N = pos_queries.shape[0] + neg_queries.shape[0]
-            loss = 0
+            proto_loss = 0
             for q, proto in ((pos_queries, pos_proto), (neg_queries, neg_proto)):
                 all_proto = torch.stack((pos_proto, neg_proto), dim=0)
                 all_proto = torch.repeat_interleave(all_proto, q.shape[0], dim=1)
                 total_dist = torch.exp(-self.dist(q, all_proto)).sum(dim=0)
-                loss += (1/N) * torch.sum(-torch.log(torch.exp(-self.dist(q, proto))/(total_dist + self.epsilon)))
+                proto_loss += (1/N) * torch.sum(-torch.log(torch.exp(-self.dist(q, proto))/(total_dist + self.epsilon)))
             opt.zero_grad()
-            loss.backward()
+            proto_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.)
             opt.step()
             if scheduler:
                 scheduler.step()
+            loss.append(proto_loss.cpu().detach().item())
+        return loss
 
     def dist(self, a, b, type="euclidean"):
-        match type:
+        match type:   #TODO implement other distance functions
             case "euclidean":
                 return torch.sum((a-b)**2, dim=-1).sqrt()
             case _:

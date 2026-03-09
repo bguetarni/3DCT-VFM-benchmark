@@ -26,7 +26,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
         exp_params (dict) experiment parameters
         data_loader (DataLoader) data loader
         device (torch.device) device for model
-        kfold (int) number of kfold cross-validation folds
+        kfold (int) number of cross-validation folds
     """
 
     if exp_params["undersampling"]:
@@ -131,7 +131,8 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                     pretrain_model.train()
 
                     trainer = CoxTrainer(exp_params["cox_strategy"], params["epoch"], params["batch_size"], params["optimizer"])
-                    trainer.train(pretrain_model, device, loader)
+                    loss = trainer.train(pretrain_model, device, loader)
+                    train_metrics.extend([{"fold": k, "split": "train", "metric": "cox_loss", "value": l, "step": s} for s, l in enumerate(loss)])
 
                     # send backbone to cpu
                     pretrain_model.to(device="cpu")
@@ -145,13 +146,15 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                     backbone.train()
                     
                     trainer = ProtoNetTrainer(params["n_iter"], params["batch_size"], params["optimizer"])
-                    trainer.train(backbone, device, loader)
+                    loss = trainer.train(backbone, device, loader)
+                    train_metrics.extend([{"fold": k, "split": "train", "metric": "proto_loss", "value": l, "step": s} for s, l in enumerate(loss)])
+
 
                     # send backbone to cpu
                     backbone.to(device="cpu")
                 case _:
                     raise ValueError(f"pre-training task {args.pretraining} not implemented, see pretraining argument choices")
-
+                
         # build classifier model from backbone
         binaryclassifier = Classifier(backbone, freeze_backbone=exp_params["freeze_backbone"])
 
