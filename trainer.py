@@ -44,7 +44,7 @@ class BaseTrainer:
         y_pred = torch.cat(y_pred, dim=0)
         y_pred_proba = torch.cat(y_pred_proba, dim=0)
         y_true = torch.cat(y_true, dim=0)
-        return self.compute_metrics(y_pred, y_pred_proba, y_true)
+        return self.compute_metrics(y_pred, y_pred_proba, y_true), (y_true.cpu().numpy().tolist(), y_pred_proba.cpu().numpy().tolist())
     
     def compute_metrics(self, y_pred, y_pred_proba, y):
         cm = confusion_matrix(y, y_pred, labels=[0,1]).ravel()
@@ -97,7 +97,7 @@ class FineTuneTrainer(BaseTrainer):
 
         # divide learning rate by 2 each 5 epochs
         if self.lr_scheduler:
-            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=5, gamma=0.5)
+            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=5, gamma=0.1)
         else:
             scheduler = None
 
@@ -109,9 +109,9 @@ class FineTuneTrainer(BaseTrainer):
         
         # train/test loop
         print("training binary classifier...")
-        train_metrics = []
-        test_metrics = []
+        metrics = []
         best_state_dict = None
+        test_pred_proba = []
         for epoch in tqdm.trange(self.epochs, ncols=100):
             
             # =====================   train iteration   =====================
@@ -141,18 +141,16 @@ class FineTuneTrainer(BaseTrainer):
             model.eval() # set to eval mode
 
             # train/val
-            for split, loader in [("train", train_loader), ("valid", valid_loader)]:
-                metrics = self.evaluate(model, loader, self.bsize, device)
-                for m, v in metrics.items():
-                    train_metrics.append({"split": split, "metric": m, "value": v, "step": epoch})
+            for split, loader in [("train", train_loader), ("valid", valid_loader), ("test", test_loader)]:
+                split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loader, self.bsize, device)
+                for m, v in split_metrics.items():
+                    metrics.append({"split": split, "metric": m, "value": v, "step": epoch})
+                
+                if split == "test":
+                    test_pred_proba.append({"step": epoch, "y_true": y_true, "y_pred_proba": y_pred_proba})
             
-            # test
-            metrics = self.evaluate(model, test_loader, self.bsize, device)
-            for m, v in metrics.items():
-                test_metrics.append({"split": "test", "metric": m, "value": v, "step": epoch})
-
             # save checkpoint if current validation loss is lowest
-            validation_loss = pandas.DataFrame(train_metrics)
+            validation_loss = pandas.DataFrame(metrics)
             validation_loss = validation_loss[(validation_loss["metric"] == "log_loss") & (validation_loss["split"] == "valid")]
             validation_loss = validation_loss["value"].values
             if validation_loss[-1] == min(validation_loss):
@@ -163,7 +161,7 @@ class FineTuneTrainer(BaseTrainer):
             if scheduler:
                 scheduler.step()
         
-        return train_metrics, test_metrics, best_state_dict
+        return metrics, best_state_dict, test_pred_proba
         
 
 class CoxTrainer(BaseTrainer):

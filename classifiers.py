@@ -34,7 +34,9 @@ class FFN(nn.Module, BaseBackbone):
         """"
         Args
             in_dim (int) dimension of input features
-            n_class (int) number of classes
+            hidden_dim (int) dimension of internal representation
+            out_dim (int) dimension of output features
+            dropout (float) dropout probability
         """
         super().__init__()
         self.head = nn.Sequential(
@@ -87,16 +89,10 @@ class Attention(nn.Module, BaseBackbone):
 
         self.layers = nn.ModuleDict({
             "proj": nn.ModuleDict({m: nn.ModuleDict({k: nn.Linear(v, hidden_dim) for k,v in feat.items()}) if isinstance(feat, dict) else nn.Linear(feat, hidden_dim) for m, feat in dims.items()}),
-            
-            "FFN": nn.Sequential(
-                nn.Linear(hidden_dim, 4*hidden_dim),
-                nn.GELU(),
-                nn.Linear(4*hidden_dim, hidden_dim),
-                nn.Dropout(dropout),
-            ),
+            "ffn": FFN(hidden_dim, 4*hidden_dim, hidden_dim),
             "ln": nn.LayerNorm(hidden_dim),
             "dropout": nn.Dropout(dropout),
-            "out": nn.Linear(hidden_dim, out_dim),
+            "out": FFN(hidden_dim, 4*hidden_dim, hidden_dim),
         })
 
         self.queries = nn.ParameterDict({
@@ -125,14 +121,13 @@ class Attention(nn.Module, BaseBackbone):
         B = list(x["image"].values())[0].shape[0]  # batch size
 
         # project and stack modalities features
-        proj = self.layers["proj"]
         for m in x.keys():
             if isinstance(x[m], dict):
                 for k in x[m].keys():
-                    x[m][k] = proj[m][k](x[m][k])
+                    x[m][k] = self.layers["proj"][m][k](x[m][k])
                 x[m] = torch.stack(tuple(x[m].values()), dim=1)
             else:
-                x[m] = proj[m](x[m])
+                x[m] = self.layers["proj"][m](x[m])
 
         # initialize query vectors
         q_mi = {k: v.unsqueeze(dim=0).repeat(B, 1) for k,v in self.queries["q_mi"].items()}
@@ -156,7 +151,7 @@ class Attention(nn.Module, BaseBackbone):
                 x[m] = self.layers["dropout"](self.layers["ln"](x[m]))
                 
                 # FFN
-                x[m] = self.layers["FFN"](x[m])
+                x[m] = self.layers["ffn"](x[m])
 
             # inter-modality fusion
             modality_features = torch.stack([q_mi[m] for m in x.keys()], dim=1)
@@ -226,14 +221,15 @@ class GatedModality(nn.Module, BaseBackbone):
             dims (dict) dict of input dimension for each modality and features ({"m": {"f1": n1, "f2": n2}, ...}})
             hidden_dim (int) projection dimension after concatenation of all features of modality
             out_dim (int) dimension of output features
+            dropout (float) dropout probability
         """
         super().__init__()
         n_modality = len(dims)
         self.hidden_dim = hidden_dim
-        self.ffn = nn.ModuleDict({m: FFN(sum(feat.values()), 3*hidden_dim, hidden_dim) if isinstance(feat, dict) else FFN(feat, 3*hidden_dim, hidden_dim) for m, feat in dims.items()})
+        self.proj = nn.ModuleDict({m: nn.Linear(sum(feat.values()), hidden_dim) if isinstance(feat, dict) else nn.Linear(feat, hidden_dim) for m, feat in dims.items()})
         self.bn = nn.BatchNorm1d(n_modality * hidden_dim)
         self.gates = nn.Linear(n_modality * hidden_dim, n_modality)
-        self.out = nn.Linear(n_modality * hidden_dim, out_dim)
+        self.out = FFN(n_modality * hidden_dim, hidden_dim, out_dim)
         self.dropout = nn.Dropout(dropout)
 
     def save(self, path_):
@@ -244,14 +240,14 @@ class GatedModality(nn.Module, BaseBackbone):
 
     def get_num_params(self):
         get_n = lambda i: sum(p.numel() for p in i.parameters() if p.requires_grad)
-        return get_n(self.ffn) + get_n(self.gates) + get_n(self.out)
+        return get_n(self.proj) + get_n(self.gates) + get_n(self.out)
 
     def forward(self, x):
         """
         Args
             x (dict) dict of input tensors for each modality and features ({"m": {"f1": tensor1, "f2": tensor2}, ...}})
         """
-        modality_features = {m: self.ffn[m](torch.cat(tuple(x[m].values()), dim=-1)) if isinstance(x[m], dict) else self.ffn[m](x[m]) for m in x.keys()}
+        modality_features = {m: self.proj[m](torch.cat(tuple(x[m].values()), dim=-1)) if isinstance(x[m], dict) else self.proj[m](x[m]) for m in x.keys()}
         modality_features = torch.cat(tuple(modality_features.values()), dim=-1)
         modality_features = self.bn(modality_features)
         gates = torch.sigmoid(self.gates(modality_features))
@@ -265,41 +261,17 @@ class GatedModality(nn.Module, BaseBackbone):
     def get_out_dim(self):
         return self.out.out_features
 
-
-class CoxModel(nn.Module):
-    """
-    Class to build a model to train a backbone using Cox partial likelihood or ProtoNet loss.
-    Args
-        backbone (BaseBackbone) backbone to use for survival analysis
-    """
-    def __init__(self, backbone):
-        super().__init__()
-        self.backbone = backbone
-        self.head = nn.Linear(backbone.get_out_dim(), 1)
-
-    def forward(self, x):   
-        return self.head(self.backbone(x))
-
-    def __call__(self, input):
-        return self.forward(input)
-
     
 class Classifier(nn.Module):
     """
     Class to build a classifier based on a backbone. 
     Args
         backbone (BaseBackbone) backbone to use for classification
-        freeze_backbone (bool) whether to freeze backbone parameters during training
     """
-    def __init__(self, backbone, n_class=1, freeze_backbone=True):
+    def __init__(self, backbone, n_class=1):
         super().__init__()
         self.backbone = backbone
         self.head = nn.Linear(backbone.get_out_dim(), n_class)
-
-        # freeze backbone parameters
-        if freeze_backbone:
-            for param in self.backbone.parameters():
-                param.requires_grad = False
 
     def forward(self, x):
         return self.head(self.backbone(x))

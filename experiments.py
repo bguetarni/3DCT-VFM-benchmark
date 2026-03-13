@@ -8,7 +8,7 @@ import pandas
 import torch
 import coolname
 
-from classifiers import Attention, Concat, GatedModality, FFN, CoxModel, Classifier
+from classifiers import Attention, Concat, GatedModality, FFN, Classifier
 from dataloader import DataLoader, CoxLoader, ProtoNetLoader
 from trainer import CoxTrainer, FineTuneTrainer, ProtoNetTrainer
 
@@ -18,36 +18,42 @@ def display_split_stats(loader):
     for j, c in stats.items():
         print(f"\t {j}: {c} ({int(100*c/len(y))}%)")
 
-def kfold_training(exp_params, data_loader, kfold, device="cpu"):
+def bootstrap_kfold_training(exp_params, data_loader, device="cpu"):
     """
-    Perform kfold training and testing and return classification metrics as dict
+    Perform bootstrap/CV training and testing and return classification metrics as dict
 
     Args:
         exp_params (dict) experiment parameters
         data_loader (DataLoader) data loader
         device (torch.device) device for model
-        kfold (int) number of cross-validation folds
     """
 
     if exp_params["undersampling"]:
         print("applying undersampling")
         data_loader.undersampling(per_center=args.per_center)
 
-    train_metrics = []
-    test_metrics = []
+    metrics = []
     best_state_dict = {}
     normalizer = {}
     patients_idxes = {}
-    for k, ((X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test)) in enumerate(data_loader.split(kfold, 
-                                                                                                     train_val_split=args.train_split, 
-                                                                                                     per_center=args.per_center)):
-        print(f"kfold {k+1}/{kfold}")
+    test_pred_proba = {}
+
+    if exp_params['kfold']:
+        iter_ = data_loader.split(kfold=exp_params['kfold'])
+    else:
+        iter_ = data_loader.split(bootstrap=exp_params['bootstrap'])
+
+    for i, ((X_train, Y_train), (X_valid, Y_valid), (X_test, Y_test)) in enumerate(iter_):
+        if exp_params['kfold']:
+            print(f"run {i+1}/{exp_params['kfold']}")
+        else:
+            print(f"run {i+1}/{exp_params['bootstrap']}")
         train_loader = DataLoader(base_path=None, name=None, X=X_train, Y=Y_train, uniform_sampling=exp_params["uniform_sampling"], class_weights=exp_params["class_weights"])
         valid_loader = DataLoader(base_path=None, name=None, X=X_valid, Y=Y_valid)
         test_loader = DataLoader(base_path=None, name=None, X=X_test, Y=Y_test)
 
         # save patients indices for current fold
-        patients_idxes.update({f"fold {k}": {
+        patients_idxes.update({f"run {i}": {
             "train": train_loader.X.index.to_list(), 
             "valid": valid_loader.X.index.to_list(), 
             "test": test_loader.X.index.to_list()}})
@@ -67,7 +73,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
             norm = train_loader.normalize_image_features(normalizer=args.normalizer)
             valid_loader.normalize_image_features(normalizer=norm)
             test_loader.normalize_image_features(normalizer=norm)
-            normalizer.update({k: norm.get_params()})
+            normalizer.update({i: norm.get_params()})
 
         # normalize clinical features
         # only present features will be normalized
@@ -126,13 +132,13 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                     loader.prepare_data(exp_params["task"])
 
                     # model : backbone + linear layer
-                    pretrain_model = CoxModel(backbone)
+                    pretrain_model = Classifier(backbone)
                     pretrain_model.to(device)
                     pretrain_model.train()
 
                     trainer = CoxTrainer(exp_params["cox_strategy"], params["epoch"], params["batch_size"], params["optimizer"])
                     loss = trainer.train(pretrain_model, device, loader)
-                    train_metrics.extend([{"fold": k, "split": "train", "metric": "cox_loss", "value": l, "step": s} for s, l in enumerate(loss)])
+                    metrics.extend([{"run": i, "split": "train", "metric": "cox_loss", "value": l, "step": s} for s, l in enumerate(loss)])
 
                     # send backbone to cpu
                     pretrain_model.to(device="cpu")
@@ -147,7 +153,7 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                     
                     trainer = ProtoNetTrainer(params["n_iter"], params["batch_size"], params["optimizer"])
                     loss = trainer.train(backbone, device, loader)
-                    train_metrics.extend([{"fold": k, "split": "train", "metric": "proto_loss", "value": l, "step": s} for s, l in enumerate(loss)])
+                    metrics.extend([{"run": i, "split": "train", "metric": "proto_loss", "value": l, "step": s} for s, l in enumerate(loss)])
 
 
                     # send backbone to cpu
@@ -156,19 +162,27 @@ def kfold_training(exp_params, data_loader, kfold, device="cpu"):
                     raise ValueError(f"pre-training task {args.pretraining} not implemented, see pretraining argument choices")
                 
         # build classifier model from backbone
-        binaryclassifier = Classifier(backbone, freeze_backbone=exp_params["freeze_backbone"])
+        if args.pretraining == "cox":
+            # reuse pre-trained backbone with corresponding linear layer
+            model = pretrain_model
+        else:
+            model = Classifier(backbone)
 
         # train model
-        optimizer_params = {"name": exp_params["optimizer"], "lr": exp_params["lr"]}
-        trainer = FineTuneTrainer(exp_params["epoch"], exp_params["bsize"], optimizer_params, bool(exp_params["lr_scheduler"]), exp_params["class_weights"])
-        fold_train_metrics, fold_test_metrics, fold_best_state_dict = trainer.train(binaryclassifier, device, train_loader, valid_loader, test_loader)
+        try:
+            optimizer_params = {"name": exp_params["optimizer"], "lr": exp_params["lr"]}
+            trainer = FineTuneTrainer(exp_params["epoch"], exp_params["bsize"], optimizer_params, bool(exp_params["lr_scheduler"]), exp_params["class_weights"])
+            fold_metrics, fold_best_state_dict, fold_test_pred_proba = trainer.train(model, device, train_loader, valid_loader, test_loader)
+        except RuntimeError:
+            print("RuntimeError during training, skipping run")
+            continue
 
         # update metrics and checkpoint
-        best_state_dict.update({k: fold_best_state_dict})
-        train_metrics.extend([{"fold": k, **d} for d in fold_train_metrics])
-        test_metrics.extend([{"fold": k, **d} for d in fold_test_metrics])
+        best_state_dict.update({i: fold_best_state_dict})
+        test_pred_proba.update({i: fold_test_pred_proba})
+        metrics.extend([{"run": i, **d} for d in fold_metrics])
         
-    return train_metrics, test_metrics, best_state_dict, normalizer, patients_idxes
+    return metrics, best_state_dict, normalizer, patients_idxes, test_pred_proba
 
 
 def main(args):
@@ -197,20 +211,17 @@ def main(args):
 
     # fit model
     print("fitting model")
-    train_metrics, test_metrics, best_state_dict, normalizer, patients_idxes = kfold_training(exp_params, data_loader, args.kfold, device,)
+    metrics, best_state_dict, normalizer, patients_idxes, test_pred_proba = bootstrap_kfold_training(exp_params, data_loader, device)
     
     # save results
-    pandas.DataFrame(train_metrics).to_csv(out_path.joinpath("train_metrics.csv"))
-    pandas.DataFrame(test_metrics).to_csv(out_path.joinpath("test_metrics.csv"))
+    pandas.DataFrame(metrics).to_csv(out_path.joinpath("metrics.csv"))
 
     # save best model state dicts
-    for i, state_dict in best_state_dict.items():
-        torch.save(state_dict, out_path.joinpath(f"best_checkpoint_{i}.pt"))
+    torch.save(best_state_dict, out_path.joinpath(f"best_checkpoint.pt"))
 
     # save normalizers
-    for i, norm in normalizer.items():
-        with open(out_path.joinpath(f"normalizer_{i}.pickle"), "wb") as f:
-            pickle.dump(norm, f)
+    with open(out_path.joinpath(f"normalizer.pickle"), "wb") as f:
+        pickle.dump(normalizer, f)
 
     # save exp params
     with open(out_path.joinpath("params.json"), "w") as f:
@@ -224,14 +235,18 @@ def main(args):
     with open(out_path.joinpath("features.json"), "w") as f:
         json.dump(feature_names, f)
 
+    # save test predicted probabilities and true labels for each bootstrap iteration
+    with open(out_path.joinpath("test_pred_proba.json"), "w") as f:
+        json.dump(test_pred_proba, f)
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()    
+    parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', type=str, required=True, 
                         choices=["artix", "headneckctatlas", "headneckpetct", "hecktor", "oropharyngealradiomicsoutcomes", "qinheadneck", "radcure"], 
                         help='name of dataset')
-    parser.add_argument('--kfold', type=int, default=5, help='number of kfold cross-validation folds')
-    parser.add_argument('--train_split', type=float, default=0.8, help='proportion of training data used for training (rest for validation)')
+    parser.add_argument('--kfold', type=int, default=None, help='number of folds for k-fold cross-validation')
+    parser.add_argument('--bootstrap', type=int, default=None, help='number of bootstrap training')
     parser.add_argument('--pretraining', default=None, choices=["cox", "protonet"], help="which method to use for pre-training")
     parser.add_argument('--cox_strategy', default="1v1", choices=["1v1", "1vN"], help="which Cox pre-training strategy to use: 1v1 (train on pairs of one positive and one negative samples) or 1vN (train on batches with multiple positive and negative samples using Cox partial likelihood loss)")
     parser.add_argument('--modality', type=str, required=True, choices=["both", "image", "clinical"],  help="which modality to use")
@@ -239,7 +254,6 @@ if __name__ == "__main__":
     parser.add_argument('--output', type=str, required=True, help='path to save results')    
     parser.add_argument('--extractors', type=str, default="ct-fm", help="extractors separated by comma (e.g., 'ct-fm,suprem')")
     parser.add_argument('--backbone', type=str, required=True, choices=["attention", "concat", "gated", "ffn"], help="type of backbone")
-    parser.add_argument('--freeze_backbone', action='store_true', help="freeze the backbone for binary task fine-tuning")
     parser.add_argument('--hidden_dim', type=int, default=128, help="dimension after features fusion")
     parser.add_argument('--out_dim', type=int, default=64, help="output dimension of backbone")
     parser.add_argument('--n_layer', type=int, default=1, help="number of layers in attention fusion")
@@ -259,6 +273,8 @@ if __name__ == "__main__":
     parser.add_argument('--uniform_sampling', action='store_true', help="sample uniformly across centers for training")
     parser.add_argument('--gpu', type=str, default="", help='GPUs to use')
     args = parser.parse_args()
+
+    assert (args.kfold is not None) ^ (args.bootstrap is not None), "exactly one of kfold or bootstrap argument must be provided"
     
     print("Script arguments:")
     for k, v in vars(args).items():

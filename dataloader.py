@@ -36,26 +36,72 @@ class Normalizer:
     def set_params(self, params):
         self.normalizer.__setstate__(params)
 
-class MultiCenterStratifiedKFold:
+class MultiCenterStratifiedBootstrapSplitter:
     def __init__(self, Y):
         self.Y = Y
 
-    def split(self, kfold=None, train_val_split=0.6, per_center=False):
+    def split(self, bootstrap, train_test_split, train_val_split, per_center=False):
         """
-        Split data with stratified k-fold
+        Split data with stratified bootstraps
 
-        kfold (int) number of folds
+        bootstrap (int) number of bootstrap iterations
+        train_test_split (float) train data factor for training, the rest is for testing
         train_val_split (float) train/validation data factor for training, the rest is for validation
         per_center (bool) wether to split data seaparatly according to center
         """
 
-        if kfold is None:
-            if per_center:
-                # if (all centers) size > 500 k=5 else k=3
-                sizes = np.array([len(self.Y[self.Y["center"] == c]) for c in self.Y["center"].unique()])
-                kfold = 5 if np.all(sizes >= 500) else 3
-            else:
-                kfold = 5 if len(self.Y) > 500 else 3
+        if per_center:
+            # define indices and labels
+            sample_idx = {c: np.array(self.Y[self.Y["center"] == c].index) for c in self.Y["center"].unique()}
+            sample_labels = {c: self.Y[self.Y["center"] == c]["label"] for c in self.Y["center"].unique()}
+
+            # stratified kfold split to ensure similar label distribution across folds
+            skf = {c: StratifiedShuffleSplit(n_splits=bootstrap, train_size=train_test_split).split(sample_idx[c], sample_labels[c].values) for c in self.Y["center"].unique()}
+
+            for _ in range(bootstrap):
+                train_idx = {}
+                val_idx = {}
+                test_idx = {}
+                for c, skfold in skf.items():
+                    train_idx_center, test_idx_center = next(skfold)
+                    sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
+                    train_idx_center_, val_idx_center_ = next(sss.split(sample_idx[c][train_idx_center], sample_labels[c].loc[sample_idx[c][train_idx_center]]))
+                    train_idx.update({c: sample_idx[c][train_idx_center][train_idx_center_]})
+                    val_idx.update({c: sample_idx[c][train_idx_center][val_idx_center_]})
+                    test_idx.update({c: sample_idx[c][test_idx_center]})
+                
+                # concatenate indices from different centers
+                train_idx = np.concatenate(list(train_idx.values()))
+                val_idx = np.concatenate(list(val_idx.values()))
+                test_idx = np.concatenate(list(test_idx.values()))
+                yield train_idx, val_idx, test_idx
+            return StopIteration
+        else:
+            # define indices
+            sample_idx = np.array(self.Y.index)
+
+            # stratified kfold split to ensure similar label distribution across folds
+            skf = StratifiedShuffleSplit(n_splits=bootstrap, train_size=train_test_split)
+
+            for train_idx, test_idx in skf.split(sample_idx, self.Y["label"].values):
+                sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
+                train_idx_, val_idx_ = next(sss.split(sample_idx[train_idx], self.Y.loc[sample_idx[train_idx]]["label"].values))
+                yield sample_idx[train_idx][train_idx_], sample_idx[train_idx][val_idx_], sample_idx[test_idx]
+            return StopIteration
+        
+
+class MultiCenterStratifiedKFoldSplitter:
+    def __init__(self, Y):
+        self.Y = Y
+
+    def split(self, kfold, train_val_split=0.6, per_center=False):
+        """
+        Split data with stratified k-fold
+
+        kfold (int) number of folds for k-fold cross-validation
+        train_val_split (float) training data factor for splitting into training/validation split
+        per_center (bool) wether to split data seaparatly according to center
+        """
 
         if per_center:
             # define indices and labels
@@ -272,20 +318,32 @@ class DataLoader:
         cw = (cw - cw.mean()) + 1   # center values around 1
         return cw
 
-    def split(self, kfold=None, train_val_split=0.6, per_center=False):
+    def split(self, bootstrap=None, kfold=None, train_test_split=0.75, train_val_split=0.66, per_center=False):
         """
         split data into kfold train/validation/test sets
         
-        kfold (int) number of folds
-        train_val_split (float) proportion of training data used for training (rest for validation)
+        bootstrap (int) number of bootstrap iterations
+        kfold (int) number of folds for k-fold cross-validation
+        train_test_split (float) proportion of training data used for training/testing (only if bootstrap is not None)
+        train_val_split (float) proportion of training data used for training/validation (only if bootstrap is not None)
         per_center (bool) wether to split data seaparatly according to center
         """
 
-        splitter = MultiCenterStratifiedKFold(self.Y)
-        for train_idx, val_idx, test_idx in splitter.split(kfold, train_val_split, per_center):
-            # (train data), (val data), (test data)
-            yield (self.X.loc[train_idx], self.Y.loc[train_idx]), (self.X.loc[val_idx], self.Y.loc[val_idx]), (self.X.loc[test_idx], self.Y.loc[test_idx])
-        return StopIteration
+        if bootstrap and kfold:
+            raise ValueError("exactly one of bootstrap or kfold argument must be provided")
+        
+        if bootstrap:
+            splitter = MultiCenterStratifiedBootstrapSplitter(self.Y)
+            for train_idx, val_idx, test_idx in splitter.split(bootstrap, train_test_split, train_val_split, per_center):
+                # (train data), (val data), (test data)
+                yield (self.X.loc[train_idx], self.Y.loc[train_idx]), (self.X.loc[val_idx], self.Y.loc[val_idx]), (self.X.loc[test_idx], self.Y.loc[test_idx])
+            return StopIteration
+        else:
+            splitter = MultiCenterStratifiedKFoldSplitter(self.Y)
+            for train_idx, val_idx, test_idx in splitter.split(kfold, train_val_split, per_center):
+                # (train data), (val data), (test data)
+                yield (self.X.loc[train_idx], self.Y.loc[train_idx]), (self.X.loc[val_idx], self.Y.loc[val_idx]), (self.X.loc[test_idx], self.Y.loc[test_idx])
+            return StopIteration
 
     def undersampling(self, per_center=False):
         if per_center:
