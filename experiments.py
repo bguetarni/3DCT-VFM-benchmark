@@ -9,8 +9,8 @@ import torch
 import coolname
 
 from classifiers import Attention, Concat, GatedModality, FFN, Classifier
-from dataloader import DataLoader, CoxLoader, ProtoNetLoader
-from trainer import CoxTrainer, FineTuneTrainer, ProtoNetTrainer
+from dataloader import DataLoader, CoxProtoNetLoader, ProtoNetLoader
+from trainer import CoxProtoNetTrainer, FineTuneTrainer, ProtoNetTrainer
 
 def display_split_stats(loader):
     y = list(loader.Y["label"].values)
@@ -113,60 +113,28 @@ def bootstrap_kfold_training(exp_params, data_loader, device="cpu"):
                 params = yaml.safe_load(f)
 
             match args.pretraining:
-                case "cox":
-                    # normalize Cox pre-training features
-                    cox_X = data_loader.Cox_X.copy()
-                    if "image" in cox_X.columns.get_level_values("modality"):
-                        cox_X.loc[:, ["image"]] = norm.transform(cox_X.loc[:, ["image"]])
-                    if "age" in cox_X.columns.get_level_values("modality"):
-                        cox_X.loc[:, ("clinical", "age")] = cox_X.loc[:, ("clinical", "age")].values / 100.
-                    if "dose" in cox_X.columns.get_level_values("modality"):
-                        cox_X.loc[:, ("clinical", "dose")] = cox_X.loc[:, ("clinical", "dose")].values / 70.
-                    
-                    # supplementary data for Cox pre-training provided
-                    X = pandas.concat([train_loader.X.copy(), cox_X], axis=0)
-                    Y = pandas.concat([train_loader.Y, data_loader.Cox_Y.copy()], axis=0)
-
-                    # dataloader
-                    loader = CoxLoader(X, Y, strategy=exp_params["cox_strategy"])
-                    loader.prepare_data(exp_params["task"])
-
-                    # model : backbone + linear layer
-                    pretrain_model = Classifier(backbone)
-                    pretrain_model.to(device)
-                    pretrain_model.train()
-
-                    trainer = CoxTrainer(exp_params["cox_strategy"], params["epoch"], params["batch_size"], params["optimizer"])
-                    loss = trainer.train(pretrain_model, device, loader)
-                    metrics.extend([{"run": i, "split": "train", "metric": "cox_loss", "value": l, "step": s} for s, l in enumerate(loss)])
-
-                    # send backbone to cpu
-                    pretrain_model.to(device="cpu")
+                case "cox+protonet":
+                    loader = CoxProtoNetLoader(train_loader.X.copy(), train_loader.Y.copy())
+                    trainer = CoxProtoNetTrainer(params["n_iter"], params["batch_size"], params["optimizer"])
+                    loss_type = "cox_protonet_loss"
                 case "protonet":
-                    # dataloader
-                    loader = ProtoNetLoader(train_loader.X.copy(), train_loader.Y.copy())
-                    loader.prepare_data(exp_params["task"])
-
-                    # model : backbone + linear layer
-                    backbone.to(device)
-                    backbone.train()
-                    
+                    loader = ProtoNetLoader(train_loader.X.copy(), train_loader.Y.copy())                    
                     trainer = ProtoNetTrainer(params["n_iter"], params["batch_size"], params["optimizer"])
-                    loss = trainer.train(backbone, device, loader)
-                    metrics.extend([{"run": i, "split": "train", "metric": "proto_loss", "value": l, "step": s} for s, l in enumerate(loss)])
-
-
-                    # send backbone to cpu
-                    backbone.to(device="cpu")
+                    loss_type = "proto_loss"
                 case _:
                     raise ValueError(f"pre-training task {args.pretraining} not implemented, see pretraining argument choices")
                 
+            # pre-train the backbone
+            loader.prepare_data(exp_params["task"])
+            backbone.to(device)            
+            loss = trainer.train(backbone, device, loader)
+            metrics.extend([{"run": i, "split": "train", "metric": loss_type, "value": l, "step": s} for s, l in enumerate(loss)])
+
+            # send backbone back to cpu to build classifier
+            backbone.to(device="cpu")
+                
         # build classifier model from backbone
-        if args.pretraining == "cox":
-            # reuse pre-trained backbone with corresponding linear layer
-            model = pretrain_model
-        else:
-            model = Classifier(backbone)
+        model = Classifier(backbone)
 
         # train model
         try:
@@ -247,8 +215,7 @@ if __name__ == "__main__":
                         help='name of dataset')
     parser.add_argument('--kfold', type=int, default=None, help='number of folds for k-fold cross-validation')
     parser.add_argument('--bootstrap', type=int, default=None, help='number of bootstrap training')
-    parser.add_argument('--pretraining', default=None, choices=["cox", "protonet"], help="which method to use for pre-training")
-    parser.add_argument('--cox_strategy', default="1v1", choices=["1v1", "1vN"], help="which Cox pre-training strategy to use: 1v1 (train on pairs of one positive and one negative samples) or 1vN (train on batches with multiple positive and negative samples using Cox partial likelihood loss)")
+    parser.add_argument('--pretraining', default=None, choices=["cox+protonet", "protonet"], help="which method to use for pre-training")
     parser.add_argument('--modality', type=str, required=True, choices=["both", "image", "clinical"],  help="which modality to use")
     parser.add_argument('--task', type=str, required=True, choices=["rfs_2", "rfs_5"], help="task to train model on")
     parser.add_argument('--output', type=str, required=True, help='path to save results')    

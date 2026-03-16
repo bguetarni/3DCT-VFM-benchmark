@@ -164,10 +164,9 @@ class FineTuneTrainer(BaseTrainer):
         return metrics, best_state_dict, test_pred_proba
         
 
-class CoxTrainer(BaseTrainer):
-    def __init__(self, cox_strategy, epochs, bsize, optimizer_params, epsilon=1e-5, **kwargs):
-        self.cox_strategy = cox_strategy
-        self.epochs = epochs
+class CoxProtoNetTrainer(BaseTrainer):
+    def __init__(self, n_iter, bsize, optimizer_params, epsilon=1e-5, **kwargs):
+        self.n_iter = n_iter
         self.bsize = bsize
         self.optimizer_params = optimizer_params
         self.epsilon = epsilon
@@ -191,13 +190,12 @@ class CoxTrainer(BaseTrainer):
         
         if self.optimizer_params["lr_scheduler"]:
             # create learning rate scheduler (cosine annealing with warmup)
-            total_steps = int(self.epochs * np.ceil(len(train_loader) / self.bsize))
-            warmup = self.optimizer_params["warmup"] / self.epochs
+            warmup = self.optimizer_params["warmup"] / self.n_iter
             div_factor = float(self.optimizer_params["max_lr"]) / float(self.optimizer_params["initial_lr"])
             final_div_factor = float(self.optimizer_params["initial_lr"]) / float(self.optimizer_params["final_lr"])
-            scheduler  = torch.optim.lr_scheduler.OneCycleLR(opt, 
+            scheduler  = torch.optim.lr_scheduler.OneCycleLR(opt,
                                                              max_lr=float(self.optimizer_params["max_lr"]),
-                                                             total_steps=total_steps, 
+                                                             total_steps=self.n_iter, 
                                                              pct_start=warmup, 
                                                              anneal_strategy='cos',
                                                              div_factor=div_factor,
@@ -206,34 +204,46 @@ class CoxTrainer(BaseTrainer):
             scheduler = None
         
         loss = []
-        for _ in tqdm.trange(self.epochs, ncols=100):
-            epoch_loss = []
-            for batch in train_loader.batch_iterator(self.bsize):
-                if batch is StopIteration:
+        for _ in tqdm.trange(self.n_iter, ncols=100):
+            batch = train_loader.get_random_batch(self.bsize)
+            if batch is StopIteration:
                     break
-                
-                neg, pos = batch
-                if self.cox_strategy == "1v1":
-                    neg = model(send_to_device(neg, device))
-                    pos = model(send_to_device(pos, device))
-                    cox_loss = torch.mean(-torch.log(torch.exp(neg) / (torch.exp(pos) + self.epsilon)))
-                else:
-                    neg = model(send_to_device(neg, device))
-                    predict_fn = lambda t: model(send_to_device(t, device))
-                    exp_sum_fn = lambda t: torch.exp(t).sum(dim=0)
-                    pos = map(predict_fn, pos)
-                    pos = map(exp_sum_fn, pos)
-                    pos = torch.stack(tuple(pos), dim=0)
-                    cox_loss = torch.mean(-torch.log(torch.exp(neg) / (pos + self.epsilon)))
-                opt.zero_grad()
-                cox_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.)
-                opt.step()
-                if scheduler:
-                    scheduler.step()
-                epoch_loss.append(cox_loss.cpu().detach().item())
-            loss.append(np.mean(epoch_loss))
+            pos, neg = batch
+            
+            # compute later feature representation
+            pos = model(send_to_device(pos, device))
+            neg = model(send_to_device(neg, device))
+
+            # compute class prototypes
+            pos_proto = pos.mean(dim=0, keepdim=True)
+            neg_proto = neg.mean(dim=0, keepdim=True)
+
+            # distances between instances
+            pairwise_dist = torch.sum((pos[:,None,:] - neg[None,:,:])**2, dim=-1).sqrt()
+            
+            # positive instances loss
+            pos_proto_dist = self.prototype_dist(pos, pos_proto)
+            pos_loss = -torch.log(torch.exp(-pos_proto_dist)/(torch.exp(-pos_proto_dist) + torch.exp(-pairwise_dist).sum(dim=1) + self.epsilon))
+
+            # negative instances loss
+            neg_proto_dist = self.prototype_dist(neg, neg_proto)
+            neg_loss = -torch.log(torch.exp(-neg_proto_dist)/(torch.exp(-neg_proto_dist) + torch.exp(-pairwise_dist).sum(dim=0) + self.epsilon))
+
+            # total loss
+            cox_proto_loss = torch.cat((pos_loss, neg_loss)).mean()
+            
+            # update model parameters with gradient clippping
+            opt.zero_grad()
+            cox_proto_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=3.)
+            opt.step()
+            if scheduler:
+                scheduler.step()
+            loss.append(cox_proto_loss.cpu().detach().item())
         return loss
+    
+    def prototype_dist(self, instances, proto):
+        return torch.sum((instances - proto)**2, dim=-1).sqrt()
     
 class ProtoNetTrainer:
     def __init__(self, n_iter, bsize, optimizer_params, epsilon=1e-5, **kwargs):

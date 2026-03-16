@@ -452,44 +452,29 @@ class DataLoader:
         return StopIteration
 
 
-class CoxLoader:
-    def __init__(self, X, Y, strategy="1v1"):
+class CoxProtoNetLoader:
+    def __init__(self, X, Y):
         self.X = X
         self.Y = Y
-        self.strategy = strategy
 
     def __len__(self):
-        if self.strategy == "1v1":
-            return len(self.neg_idx)
-        else:
-            return len(self.valid_idx)
+        return len(self.neg_idx) + len(self.pos_idx)
 
-    def prepare_data(self, task=None):
-        if self.strategy == "1v1" and task is None:
-            raise ValueError("task argument must be provided for 1v1 strategy")
+    def prepare_data(self, task):
+        if task == "rfs_2":
+            T = 2
+        elif task == "rfs_5":
+            T = 5
+        else:
+            raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
         
-        if self.strategy == "1v1":
-            if task == "rfs_2":
-                T = 2
-            elif task == "rfs_5":
-                T = 5
-            else:
-                raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
-            
-            self.pos_idx = self.Y[self.Y["rfs_T"] >= T*365].index
-            self.neg_idx = self.Y[(self.Y["rfs_T"] < T*365) & (self.Y["rfs_delta"] == 1)].index
+        self.pos_idx = self.Y[self.Y["rfs_T"] >= T*365].index
+        self.neg_idx = self.Y[(self.Y["rfs_T"] < T*365) & (self.Y["rfs_delta"] == 1)].index
 
-            if len(self.pos_idx) == 0 or len(self.neg_idx) == 0:
-                raise ValueError(f"No positive or negative sample for Cox pre-training with {task} task. Consider changing task or strategy.")
-            
-            if len(self.pos_idx) != len(self.neg_idx):
-                n = min(len(self.pos_idx), len(self.neg_idx))
-                self.pos_idx = np.random.choice(self.pos_idx, size=n, replace=False)
-                self.neg_idx = np.random.choice(self.neg_idx, size=n, replace=False)
-        else:
-            self.valid_idx = self.Y[self.Y["rfs_delta"] == 1].index
+        if len(self.pos_idx) == 0 or len(self.neg_idx) == 0:
+            raise ValueError(f"No positive or negative sample for Cox pre-training with {task} task. Consider changing task or strategy.")
 
-    def batch_iterator(self, batch_size, skip_singleton_batch=True):
+    def get_random_batch(self, batch_size):
         def dataframe_to_tensor(x):
             x_ = {}
             for m in x.columns.get_level_values("modality").unique():
@@ -499,33 +484,15 @@ class CoxLoader:
                     x_.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
             return x_
         
-        if self.strategy == "1v1":
-            self.pos_idx = np.random.permutation(self.pos_idx)
-            self.neg_idx = np.random.permutation(self.neg_idx)
-            pairs = list(zip(self.pos_idx, self.neg_idx))
-            for idx in range(0, len(pairs), batch_size):
-                pos, neg = zip(*pairs[idx : idx + batch_size])
-                neg, pos = list(neg), list(pos)
-                if skip_singleton_batch and len(neg) < 2:
-                    return StopIteration   # stop if batch size is 1 (BatchNorm error)
-                neg = dataframe_to_tensor(self.X.loc[neg])
-                pos = dataframe_to_tensor(self.X.loc[pos])
-                yield neg, pos
-        else:
-            self.valid_idx = np.random.permutation(self.valid_idx)
-            for idx in range(0, len(self.valid_idx), batch_size):
-                idx = self.valid_idx[idx : idx + batch_size]
-                if skip_singleton_batch and len(idx) < 2:
-                    return StopIteration   # stop if batch size is 1 (BatchNorm error)
-                neg = dataframe_to_tensor(self.X.loc[idx])
-                pos = []
-                for i in idx:
-                    pos_idx_i = self.Y[self.Y["rfs_T"] > self.Y.loc[i, "rfs_T"]].index
-                    if len(pos_idx_i) < 2:
-                        return StopIteration   # stop if batch size is 1 (BatchNorm error)
-                    pos.append(dataframe_to_tensor(self.X.loc[pos_idx_i]))
-                yield neg, pos
-        return StopIteration
+        # select random positive and negative samples for batch
+        n = min(len(self.pos_idx), len(self.neg_idx), batch_size)
+        pos_idx = np.random.choice(self.pos_idx, size=n, replace=False)
+        neg_idx = np.random.choice(self.neg_idx, size=n, replace=False)
+
+        # transform data to tensor format
+        pos = dataframe_to_tensor(self.X.loc[pos_idx])
+        neg = dataframe_to_tensor(self.X.loc[neg_idx])
+        return pos, neg
 
 
 class ProtoNetLoader:
