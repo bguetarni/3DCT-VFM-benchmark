@@ -172,7 +172,7 @@ class Attention(nn.Module, BaseBackbone):
         return self.forward(input)
     
     def get_out_dim(self):
-        return self.layers["out"].out_features
+        return self.layers["out"].get_out_dim()
     
 
 class Concat(nn.Module, BaseBackbone):
@@ -259,7 +259,7 @@ class GatedModality(nn.Module, BaseBackbone):
         return self.forward(input)
     
     def get_out_dim(self):
-        return self.out.out_features
+        return self.out.get_out_dim()
 
     
 class Classifier(nn.Module):

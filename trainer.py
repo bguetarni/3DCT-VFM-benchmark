@@ -97,7 +97,7 @@ class FineTuneTrainer(BaseTrainer):
 
         # divide learning rate by 2 each 5 epochs
         if self.lr_scheduler:
-            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=5, gamma=0.1)
+            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=5, gamma=0.5)
         else:
             scheduler = None
 
