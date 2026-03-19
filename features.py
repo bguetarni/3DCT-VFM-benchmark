@@ -5,8 +5,8 @@ import pickle
 import pandas
 import torch
 
-from models import CTFM, SuPreM, VISTA3D
-from dataloader import cohorts_map
+from models import CTFM, SuPreM, VISTA3D, CT_CLIP
+from datasets import cohorts_map
 
 
 if __name__ == "__main__":
@@ -14,7 +14,7 @@ if __name__ == "__main__":
     parser.add_argument('--input', type=str, required=True, help='path to folder containing cohorts PICKLE files')
     parser.add_argument('--output', type=str, required=True, help='path to folder to save features')
     parser.add_argument('--overwrite', action="store_true", default=False, help='whether to overwrite features file if already existing')
-    parser.add_argument('--type', type=str, required=True, choices=["ct-fm", "suprem", "vista3d"], help="type of features")
+    parser.add_argument('--type', type=str, required=True, choices=["ct-fm", "suprem", "vista3d", "ct-clip"], help="type of features")
     parser.add_argument('--cohort', type=str, required=True, choices=list(cohorts_map.keys()), 
                         help='which cohort to build (change for certain parts)')
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
@@ -45,6 +45,8 @@ if __name__ == "__main__":
             infer, preprocess, model = SuPreM.load(device)
         case "vista3d":
             infer, preprocess, model = VISTA3D.load(device)
+        case "ct-clip":
+            infer, preprocess, model = CT_CLIP.load(device)
         case _:
             raise ValueError(f"argument --type value not implemented: {args.type}")
 

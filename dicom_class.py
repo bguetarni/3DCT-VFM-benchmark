@@ -10,6 +10,7 @@ import dicom2nifti
 from totalsegmentator.python_api import totalsegmentator
 
 from dicom_utils import fill_vol_ctrs
+import dicom_class
 
 
 def similar(a, b):
@@ -519,6 +520,11 @@ class Patient:
             not_valid_date = filter(lambda j: j.get_acquisition_date() is None, i)
             return [*sorted(valid_date, key=lambda j: j.get_acquisition_date()), *not_valid_date]
 
+        if isinstance(self.ct, dicom_class.CT):
+            self.ct = [self.ct]
+        if isinstance(self.ct, dicom_class.CBCT):
+            self.cbct = [self.cbct]
+        
         self.ct = safe_sorting_date(self.ct)
         self.cbct = safe_sorting_date(self.cbct)
         

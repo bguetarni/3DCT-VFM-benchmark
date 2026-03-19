@@ -9,14 +9,14 @@ class BboxCropd(MapTransform):
     def __call__(self, data):
         if data["bbox"] is None:
             data = CropForegroundd(keys=["image"], source_key="image", allow_smaller=True)(data)
-            return CenterSpatialCropd(keys=["image"], roi_size=self.roi_size)(data)
         else:
             data["bbox"] = self.fit_bbox_size(data["bbox"])
             xmin, ymin, zmin = data["bbox"][0]
             xmax, ymax, zmax = data["bbox"][1]
             # assume image is channel-first
             data["image"] = data["image"][:, xmin:xmax, ymin:ymax, zmin:zmax]
-            return CenterSpatialCropd(keys=["image"], roi_size=self.roi_size)(data)
+        
+        return CenterSpatialCropd(keys=["image"], roi_size=self.roi_size)(data)
 
     def fit_bbox_size(self, bbox, size=None):
         # increase bbox to fit to specified size
@@ -32,6 +32,4 @@ class BboxCropd(MapTransform):
                 bbox[0][i] = max(0, bbox[0][i] - size[i]//2) # avoid negative values
                 delta = np.abs(min(0, bbox[0][i] - size[i]//2))
                 bbox[1][i] += size[i]//2 + delta   # compensate if we had to shift the min value
-        else:
-            bbox = bbox
         return bbox

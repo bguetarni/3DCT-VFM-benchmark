@@ -30,7 +30,7 @@ def bootstrap_kfold_training(exp_params, data_loader, device="cpu"):
 
     if exp_params["undersampling"]:
         print("applying undersampling")
-        data_loader.undersampling(per_center=args.per_center)
+        data_loader.undersampling(per_center=exp_params["per_center"])
 
     metrics = []
     best_state_dict = {}
@@ -70,7 +70,7 @@ def bootstrap_kfold_training(exp_params, data_loader, device="cpu"):
         # apply normalization function column-wise to image features
         print("normalizing features values..")
         if "image" in train_loader.X.columns.get_level_values("modality"):
-            norm = train_loader.normalize_image_features(normalizer=args.normalizer)
+            norm = train_loader.normalize_image_features(normalizer=exp_params["normalizer"])
             valid_loader.normalize_image_features(normalizer=norm)
             test_loader.normalize_image_features(normalizer=norm)
             normalizer.update({i: norm.get_params()})
@@ -106,13 +106,13 @@ def bootstrap_kfold_training(exp_params, data_loader, device="cpu"):
             
         print(f"backbone size: {backbone.get_num_params():,d}")
 
-        if args.pretraining:
-            print(f"pre-training model using {args.pretraining}...")
+        if exp_params["pretraining"]:
+            print(f"pre-training model using {exp_params['pretraining']}...")
 
             with open("./PRETRAINING_CONFIG.yaml", "r") as f:
                 params = yaml.safe_load(f)
 
-            match args.pretraining:
+            match exp_params["pretraining"]:
                 case "cox+protonet":
                     loader = CoxProtoNetLoader(train_loader.X.copy(), train_loader.Y.copy())
                     trainer = CoxProtoNetTrainer(params["n_iter"], params["batch_size"], params["optimizer"])
@@ -122,7 +122,7 @@ def bootstrap_kfold_training(exp_params, data_loader, device="cpu"):
                     trainer = ProtoNetTrainer(params["n_iter"], params["batch_size"], params["optimizer"])
                     loss_type = "proto_loss"
                 case _:
-                    raise ValueError(f"pre-training task {args.pretraining} not implemented, see pretraining argument choices")
+                    raise ValueError(f"pre-training task {exp_params['pretraining']} not implemented, see pretraining argument choices")
                 
             # pre-train the backbone
             loader.prepare_data(exp_params["task"])
@@ -134,7 +134,8 @@ def bootstrap_kfold_training(exp_params, data_loader, device="cpu"):
             backbone.to(device="cpu")
                 
         # build classifier model from backbone
-        model = Classifier(backbone)
+        freeze_ = (exp_params["pretraining"] and exp_params["freeze"])
+        model = Classifier(backbone, freeze=freeze_)
 
         # train model
         try:
@@ -232,6 +233,7 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--lr_scheduler', action='store_true', help="apply scheduling to lerning rate")
     parser.add_argument('--bsize', type=int, default=1)
+    parser.add_argument('--freeze', action='store_true', help="whether to freeze backbone weights during fine-tuning")
     parser.add_argument('--mean_reg_lambda', type=float, default=0., help="lambda parameter for mean divergence regularization loss")
     parser.add_argument('--variance_reg_lambda', type=float, default=0., help="lambda parameter for variance divergence regularization loss")
     parser.add_argument('--class_weights', action='store_true', help="whether to use class weighting in the loss to counter class imbalance")

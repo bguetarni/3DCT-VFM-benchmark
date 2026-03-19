@@ -268,10 +268,13 @@ class Classifier(nn.Module):
     Args
         backbone (BaseBackbone) backbone to use for classification
     """
-    def __init__(self, backbone, n_class=1):
+    def __init__(self, backbone, n_class=1, freeze=False):
         super().__init__()
         self.backbone = backbone
         self.head = nn.Linear(backbone.get_out_dim(), n_class)
+
+        if freeze:
+            self.backbone.requires_grad_(False)
 
     def forward(self, x):
         return self.head(self.backbone(x))
