@@ -29,7 +29,7 @@ def fill_vol_ctrs(shape, ctrs, fill_holes=True):
         if z >= mask.shape[0]:
             continue
         
-        # select point on place
+        # select points on place
         slice_points = ctrs[ctrs[:,-1] == z]
 
         # check at least 3 points for polygon
@@ -42,7 +42,7 @@ def fill_vol_ctrs(shape, ctrs, fill_holes=True):
 
     # fill holes in the mask
     # deactivate to run faster
-    # if shapes are not filled properly in OAR masks, radiomics might crash !!!
+    # if shapes are not filled properly in mask, radiomics might crash !!!
     if fill_holes:
         for z in range(mask.shape[0]):
             mask[z] = binary_fill_holes(mask[z])
@@ -78,29 +78,6 @@ def is_CT(dcm, use_exposure_time=True):
     except (PermissionError, AttributeError, TypeError):
         return False
 
-def convert_ctr_to_voxel_space(affine, points):
-    """
-    Convert world space ccordinates into voxel space coordinates based on inverse transformation
-
-    Args:
-        affine (numpy.ndarray) affine transformation from voxel to world space
-        points (numpy.ndarray) points coordinates to convert (N,3)
-    """
-
-    # inverse affine transformation
-    inv_affine = np.linalg.inv(affine)
-
-    # homogeneous coordinates
-    points = np.hstack((points, np.ones((points.shape[0], 1))))
-
-    # apply affine transformation
-    voxel_ctr = inv_affine @ points.transpose()
-
-    # reorder axes
-    voxel_ctr = voxel_ctr.transpose().astype("int64")
-
-    # drop homogeneous coordinate
-    return voxel_ctr[:,:3]
 
 def resample_dose_to_ct(ct_nii_path, dose_nii_path, out_path):
     # Resample dose to match CT volume

@@ -3,18 +3,25 @@ import os
 import argparse
 import pickle
 import pandas
+import shutil
 import torch
+from difflib import SequenceMatcher
+from radiomics import featureextractor
 
 from models import CTFM, SuPreM, VISTA3D, CT_CLIP
 from datasets import cohorts_map
 
 
+def similar(a, b):
+    return SequenceMatcher(None, a, b).ratio()
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', type=str, required=True, help='path to folder containing cohorts PICKLE files')
     parser.add_argument('--output', type=str, required=True, help='path to folder to save features')
+    parser.add_argument('--nifti_tmp_folder', type=str, default="./tmp", help='path to folder to save Nifti files')
     parser.add_argument('--overwrite', action="store_true", default=False, help='whether to overwrite features file if already existing')
-    parser.add_argument('--type', type=str, required=True, choices=["ct-fm", "suprem", "vista3d", "ct-clip"], help="type of features")
+    parser.add_argument('--type', type=str, required=True, choices=["radiomics", "ct-fm", "suprem", "vista3d", "ct-clip"], help="type of features")
     parser.add_argument('--cohort', type=str, required=True, choices=list(cohorts_map.keys()), 
                         help='which cohort to build (change for certain parts)')
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
@@ -47,6 +54,8 @@ if __name__ == "__main__":
             infer, preprocess, model = VISTA3D.load(device)
         case "ct-clip":
             infer, preprocess, model = CT_CLIP.load(device)
+        case "radiomics":
+            params_file = "./radiomics.yaml"
         case _:
             raise ValueError(f"argument --type value not implemented: {args.type}")
 
@@ -59,14 +68,58 @@ if __name__ == "__main__":
         except (ValueError, KeyError, IndexError):
             continue
         
-        try:
-            output = infer(input_path, bbox, preprocess, model, device)
-            fts = output.flatten()
-            for j, f in enumerate(fts):
-                features.append({"name": str(j), "value": f, "features": args.type, "patient": id_})
-        except (Exception, RuntimeError) as e:
-            print("Error/Exception occured: ", e)
-            continue
+        if args.type == "radiomics":
+            ct = p.ct[0]
+            rtstruct = ct.rtstruct
+            if rtstruct is None:
+                print(f"patient {id_} has no RTSTRUCT, cannot compute radiomics features, skipping...")
+                continue
+
+            if ct.get_dcm_path().endswith(".nii.gz"):   # HECKTOR
+                ct_nifti_path = ct.get_dcm_path()
+                rtstruct_nifti_path = rtstruct.get_dcm_path()
+            else: # convert DICOM roi to nifti format
+                try:
+                    # list all contours available in RTSTRUCT
+                    # calculate similarity between contours name and 'gtv'
+                    # select contour with name that most resemble 'gtv'
+                    rois = rtstruct.get_all_OARs()
+                    pairs =  [(i, similar("gtv", i.lower().replace(" ", ""))) for i in rois if "gtv" in i.lower()]
+                    roi_name, _ = sorted(pairs, reverse=True, key=lambda i: i[1])[0]
+                except IndexError:
+                    try:   # check for PTV if GTV not available
+                        rois = rtstruct.get_all_OARs()
+                        pairs =  [(i, similar("gtv", i.lower().replace(" ", ""))) for i in rois if "ptv" in i.lower()]
+                        roi_name, _ = sorted(pairs, reverse=True, key=lambda i: i[1])[0]
+                    except IndexError:
+                        continue
+                
+                # convert to nifti in temporary folder
+                ct_nifti_path = os.path.join(args.nifti_tmp_folder, "volume.nii.gz")
+                rtstruct_nifti_path = os.path.join(args.nifti_tmp_folder, "gtv.nii.gz")
+                ct.convert2nifti(ct_nifti_path)
+                rtstruct.convert2nifti(rtstruct_nifti_path, roi_name)
+
+            # extract radiomics features
+            extractor = featureextractor.RadiomicsFeatureExtractor()
+            extractor.loadParams(params_file)
+            featureVector = extractor.execute(ct_nifti_path, rtstruct_nifti_path, label=1, label_channel=0)
+
+            for k, v in featureVector.items():
+                if k.split("_")[0] == "diagnostics":
+                    continue
+                features.append({"name": k, "value": v, "features": args.type, "patient": id_})
+        else:
+            try:
+                output = infer(input_path, bbox, preprocess, model, device)
+                fts = output.flatten()
+                for j, f in enumerate(fts):
+                    features.append({"name": str(j), "value": f, "features": args.type, "patient": id_})
+            except (Exception, RuntimeError) as e:
+                print("Error/Exception occured: ", e)
+                continue
+
+        break
 
     # save to csv
     pandas.DataFrame(features).to_csv(out_path, index=False)

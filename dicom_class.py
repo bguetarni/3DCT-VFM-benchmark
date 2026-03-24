@@ -182,7 +182,7 @@ class DICOM(ABC):
             path_ += ".nii.gz"
 
         # convert DICOM to Nifti
-        dicom2nifti.dicom_series_to_nifti(self.path, path_, reorient_nifti=True)
+        dicom2nifti.dicom_series_to_nifti(self.path, path_, reorient_nifti=False)
 
 
 class Imaging(DICOM):
@@ -265,16 +265,8 @@ class CT(Imaging):
         Return shape of scan image as (Z,H,W) where Z is the depth, H the height and W the width
         """
 
-        # Get list of DICOM files
-        dicom_files = [os.path.join(self.path, f) for f in os.listdir(self.path)]
-        
-        if not dicom_files:
-            return None
-
-        # Read the first DICOM file to get Rows and Columns
-        ds = pydicom.dcmread(dicom_files[0], stop_before_pixels=True)
-
-        return (len(dicom_files), ds.Rows, ds.Columns)
+        img = self.get_sitk_image()
+        return sitk.GetArrayFromImage(img).shape
 
     def apply_totalsegmentator(self, task, tmp_nii_input, tmp_nii_output=None, overwrite_nifti=False):
         """
@@ -428,7 +420,7 @@ class RTSTRUCT(DICOM):
 
     def get_all_OARs(self):
         """
-        Return the name of all OARs in the DICOM file
+        Return the name of all ROIs in the DICOM file
         """
         dcm = pydicom.dcmread(self.get_dcm_path())
         return [roi.ROIName for roi in dcm.StructureSetROISequence]
@@ -481,15 +473,31 @@ class RTSTRUCT(DICOM):
         
     def get_structure_mask(self, name):
         """
-        Return the volume mask of an OAR
+        Return the volume mask of an ROI
 
         Args:
             name (str) name of structure as defined in the DICOM
         """
         ctrs = self.get_contours(name)
         return fill_vol_ctrs(self.parent.get_shape(), ctrs)
+    
+    def convert2nifti(self, path_, roi_name):
+        """
+        Convert DICOM structure into a Nifti file mask of the structure
 
-        
+        args:
+            path_ (str) path to nii file to save data
+            roi_name (str) name of structure as defined in the DICOM to convert into Nifti mask
+        """
+        if not(path_.endswith(".nii.gz")):
+            path_ += ".nii.gz"
+
+        mask = self.get_structure_mask(roi_name)
+        mask = sitk.GetImageFromArray(mask.astype(np.uint8))
+        mask.CopyInformation(self.parent.get_sitk_image())        
+        sitk.WriteImage(mask, path_)
+
+
 class Patient:
     def __init__(self, patient_id, center_id=None, ct=[], cbct=[], clinical={}):
         """
