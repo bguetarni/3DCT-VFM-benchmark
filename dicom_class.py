@@ -7,6 +7,7 @@ from difflib import SequenceMatcher
 import pydicom
 import nibabel
 import dicom2nifti
+from rt_utils import RTStructBuilder
 from totalsegmentator.python_api import totalsegmentator
 
 from dicom_utils import fill_vol_ctrs
@@ -170,19 +171,19 @@ class DICOM(ABC):
                         Acquisition Date Attribute (0008,0022), Tag Instance Creation Date (0008,0022))")
             return None
         
-    def convert2nifti(self, path_):
+    def convert2nifti(self, file_path):
         """
         Convert DICOM data into a Nifti file
 
         args:
-            path_ (str) path to nii file to save data
+            file_path (str) path to nii file to save data
         """
 
-        if not(path_.endswith(".nii.gz")):
-            path_ += ".nii.gz"
+        if not(file_path.endswith(".nii.gz")):
+            file_path += ".nii.gz"
 
         # convert DICOM to Nifti
-        dicom2nifti.dicom_series_to_nifti(self.path, path_, reorient_nifti=False)
+        dicom2nifti.dicom_series_to_nifti(self.path, file_path, reorient_nifti=False)
 
 
 class Imaging(DICOM):
@@ -481,21 +482,26 @@ class RTSTRUCT(DICOM):
         ctrs = self.get_contours(name)
         return fill_vol_ctrs(self.parent.get_shape(), ctrs)
     
-    def convert2nifti(self, path_, roi_name):
+    def convert2nifti(self, file_path, roi_name, mask_method="rt_utils"):
         """
         Convert DICOM structure into a Nifti file mask of the structure
 
         args:
-            path_ (str) path to nii file to save data
+            file_path (str) path to nii file to save data
             roi_name (str) name of structure as defined in the DICOM to convert into Nifti mask
         """
-        if not(path_.endswith(".nii.gz")):
-            path_ += ".nii.gz"
+        if not(file_path.endswith(".nii.gz")):
+            file_path += ".nii.gz"
 
-        mask = self.get_structure_mask(roi_name)
+        match mask_method:
+            case "rt_utils":
+                rtstruct = RTStructBuilder.create_from(self.parent.path, self.get_dcm_path())
+                mask = rtstruct.get_roi_mask_by_name(roi_name)
+            case _:
+                mask = self.get_structure_mask(roi_name)
         mask = sitk.GetImageFromArray(mask.astype(np.uint8))
-        mask.CopyInformation(self.parent.get_sitk_image())        
-        sitk.WriteImage(mask, path_)
+        mask.CopyInformation(self.parent.get_sitk_image())
+        sitk.WriteImage(mask, file_path)
 
 
 class Patient:

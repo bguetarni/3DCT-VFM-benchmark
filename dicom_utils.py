@@ -1,8 +1,9 @@
 import os
 import pathlib
 import numpy as np
+import cv2 as cv
 from scipy.ndimage import binary_fill_holes
-from skimage.draw import polygon
+from skimage.draw import polygon2mask
 import SimpleITK as sitk
 
 def get_directory_level(path1, path2):
@@ -14,7 +15,7 @@ def get_directory_level(path1, path2):
     relpath2 = os.path.relpath(path2, start=commonpath)
     return len(pathlib.Path(relpath1).parents), len(pathlib.Path(relpath2).parents)
 
-def fill_vol_ctrs(shape, ctrs, fill_holes=True):
+def fill_vol_ctrs(shape, ctrs, use_opencv=True, fill_holes=False):
     """
     Create mask of shape (*shape) anf fill contours with 1s
 
@@ -37,8 +38,14 @@ def fill_vol_ctrs(shape, ctrs, fill_holes=True):
             continue
 
         # fill polygon
-        rr, cc = polygon(slice_points[:,1], slice_points[:,0], shape=mask.shape[1:])
-        mask[z, rr, cc] = 1
+        if use_opencv:
+            slide_mask = np.zeros(mask.shape[1:], dtype=np.uint8)
+            cv.fillPoly(slide_mask, [slice_points[:,:2]], color=1)
+            mask[z] = slide_mask
+        else:
+            # invert slice_points coordinates from (x,y) to (row,column) for polygon2mask
+            slide_mask = polygon2mask(mask.shape[1:], slice_points[:,:2][:,::-1])
+            mask[z] = slide_mask
 
     # fill holes in the mask
     # deactivate to run faster

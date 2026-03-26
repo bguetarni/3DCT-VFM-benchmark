@@ -3,10 +3,11 @@ import os
 import argparse
 import pickle
 import pandas
-import shutil
 import torch
+import time
 from difflib import SequenceMatcher
 from radiomics import featureextractor
+import dicom2nifti
 
 from models import CTFM, SuPreM, VISTA3D, CT_CLIP
 from datasets import cohorts_map
@@ -27,8 +28,12 @@ if __name__ == "__main__":
     parser.add_argument('--gpu', type=str, default="", help='GPU to use')
     args = parser.parse_args()
 
+    # disable dicom2nifti slice increment validation to avoid errors
+    # see https://github.com/icometrix/dicom2nifti/issues/36
+    dicom2nifti.settings.disable_validate_slice_increment()
+
+    # build output path and check if file already exists
     out_path = os.path.join(args.output, args.cohort, f"{args.type}.csv")
-    
     os.makedirs(os.path.split(out_path)[0], exist_ok=True)
     if os.path.exists(out_path) and not(args.overwrite):
         print(f"WARNING: exiting because destination file already exists ({out_path}). To overwrite, set argument --overwrite to True")
@@ -56,6 +61,12 @@ if __name__ == "__main__":
             infer, preprocess, model = CT_CLIP.load(device)
         case "radiomics":
             params_file = "./radiomics.yaml"
+            # script may run in parallel
+            # save nifti files in a temporary folder with unique timestamp to avoid conflicts
+            # to ensure different runs of script do not overwrite each other's nifti files, add PID
+            dtime = time.strftime("%Y%m%d%H%M%S", time.gmtime())
+            ct_nifti_path = os.path.join(args.nifti_tmp_folder, f"volume_{dtime}_{os.getpid()}.nii.gz")
+            rtstruct_nifti_path = os.path.join(args.nifti_tmp_folder, f"gtv_{dtime}_{os.getpid()}.nii.gz")
         case _:
             raise ValueError(f"argument --type value not implemented: {args.type}")
 
@@ -95,15 +106,17 @@ if __name__ == "__main__":
                         continue
                 
                 # convert to nifti in temporary folder
-                ct_nifti_path = os.path.join(args.nifti_tmp_folder, "volume.nii.gz")
-                rtstruct_nifti_path = os.path.join(args.nifti_tmp_folder, "gtv.nii.gz")
                 ct.convert2nifti(ct_nifti_path)
                 rtstruct.convert2nifti(rtstruct_nifti_path, roi_name)
 
-            # extract radiomics features
-            extractor = featureextractor.RadiomicsFeatureExtractor()
-            extractor.loadParams(params_file)
-            featureVector = extractor.execute(ct_nifti_path, rtstruct_nifti_path, label=1, label_channel=0)
+            try:
+                # extract radiomics features
+                extractor = featureextractor.RadiomicsFeatureExtractor()
+                extractor.loadParams(params_file)
+                featureVector = extractor.execute(ct_nifti_path, rtstruct_nifti_path, label=1, label_channel=0)
+            except ValueError as e:
+                print(f"ValueError occured for patient {id_}: {e}")
+                continue
 
             for k, v in featureVector.items():
                 if k.split("_")[0] == "diagnostics":
@@ -118,8 +131,6 @@ if __name__ == "__main__":
             except (Exception, RuntimeError) as e:
                 print("Error/Exception occured: ", e)
                 continue
-
-        break
 
     # save to csv
     pandas.DataFrame(features).to_csv(out_path, index=False)
