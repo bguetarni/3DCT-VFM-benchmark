@@ -20,7 +20,6 @@ TransformParameters.0.txt
 pickle datasets/*
 clinical description/*
 datasets clinical data avilability.xlsx
-tmp.ipynb
 featuresbis/*
 features_00/*
 features_whole_CT/*
