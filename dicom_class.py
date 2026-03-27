@@ -497,6 +497,7 @@ class RTSTRUCT(DICOM):
             case "rt_utils":
                 rtstruct = RTStructBuilder.create_from(self.parent.path, self.get_dcm_path())
                 mask = rtstruct.get_roi_mask_by_name(roi_name)
+                mask = np.moveaxis(mask, -1, 0) # change from (H,W,Z) to (Z,H,W)
             case _:
                 mask = self.get_structure_mask(roi_name)
         mask = sitk.GetImageFromArray(mask.astype(np.uint8))

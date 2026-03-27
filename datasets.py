@@ -261,6 +261,7 @@ class HECKTOR(BaseLoader):
         self.center_map = {1: 'CHUM', 2: 'CHUP', 3: 'CHUS', 6: 'HGJ', 7: 'HMR', 5: 'MDA', 8: 'USZ'}
 
         self.clinical_key_mapping = {
+            "Age": "age",
             "Gender": "sex",
             "Performance Status": "ecog",
             # "Tobacco Consumption": "smoking",
@@ -268,7 +269,6 @@ class HECKTOR(BaseLoader):
             "M-stage": "metastasis",
             # "HPV Status": "hpv",
             "Treatment": "treatment",
-            "Age": "age",
             # "dose": "dose",
         }
 
@@ -596,12 +596,12 @@ class HeadNeckPETCT(TCIA):
         super().__init__(path)
 
         self.clinical_key_mapping = {
-            "Sex": "sex",
             "Age": "age",
-            "Primary Site": "localisation",
-            "M-stage": "metastasis",
+            "Sex": "sex",
             "TNM group stage": "stage",
+            "M-stage": "metastasis",
             # "HPV status": "hpv",
+            "Primary Site": "localisation",
             "Therapy": "treatment",
             "Surgery": "surgery",
             # "dose": "dose",
@@ -962,16 +962,16 @@ class RADCURE(TCIA):
         super().__init__(path)
 
         self.clinical_key_mapping = {
+            "Age": "age",
             "Sex": "sex",
             "ECOG PS": "ecog",
             # "Smoking Status": "smoking",
             "Stage": "stage",
-            # "HPV": "hpv",
-            "Tx Modality": "treatment",
-            "Age": "age",
-            "Dose": "dose",
-            "Ds Site": "localisation",
             "METASTASIS": "metastasis",
+            # "HPV": "hpv",
+            "Ds Site": "localisation",
+            "Tx Modality": "treatment",
+            "Dose": "dose",
         }
 
         self.clinical_encoding = {

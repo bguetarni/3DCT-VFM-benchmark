@@ -8,6 +8,7 @@ import time
 from difflib import SequenceMatcher
 from radiomics import featureextractor
 import dicom2nifti
+import cv2 as cv
 
 from models import CTFM, SuPreM, VISTA3D, CT_CLIP
 from datasets import cohorts_map
@@ -106,8 +107,15 @@ if __name__ == "__main__":
                         continue
                 
                 # convert to nifti in temporary folder
-                ct.convert2nifti(ct_nifti_path)
-                rtstruct.convert2nifti(rtstruct_nifti_path, roi_name)
+                try:
+                    ct.convert2nifti(ct_nifti_path)
+                except dicom2nifti.exceptions.ConversionError:
+                    print(f"ConversionError occured for patient {id_} CT, skipping...")
+                    continue
+                try:
+                    rtstruct.convert2nifti(rtstruct_nifti_path, roi_name)
+                except (cv.error, Exception):
+                    continue
 
             try:
                 # extract radiomics features

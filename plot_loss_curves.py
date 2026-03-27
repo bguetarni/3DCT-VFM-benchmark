@@ -12,7 +12,7 @@ base_path = r"C:\Users\bilel.guetarni\Desktop\workspace\SEQ-RT\experiments"
 df = []
 for path_ in pathlib.Path(base_path).glob("*"):    
     try:
-        if not(int(path_.name) in [79]):
+        if not(int(path_.name) in [78]):
             continue
     except ValueError:
         continue
@@ -35,7 +35,7 @@ for path_ in pathlib.Path(base_path).glob("*"):
         # add to df
         df.extend(metrics.to_dict(orient="records"))
 
-df = pandas.DataFrame(df)
+df = pandas.DataFrame(df)    
 
 for exp in tqdm.tqdm(df["exp"].unique()):
     print(exp)
