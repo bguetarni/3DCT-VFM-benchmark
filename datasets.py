@@ -16,9 +16,8 @@ from monai.transforms import Flip, SpatialCrop
 import dicom_class
 import dicom_utils
 
-CATEGORICAL_CLINICAL_VARIABLES = ["sex", "ecog", "smoking", "stage", 
-                                  "hpv", "treatment", "surgery", "localisation", 
-                                  "metastasis"]
+CATEGORICAL_CLINICAL_VARIABLES = ["sex", "ecog", "smoking", "stage", "hpv", "treatment", 
+                                  "surgery", "localisation", "metastasis"]
 
 def convert2date(dt):
     return datetime.datetime.strptime(dt, "%d/%m/%Y").date()
@@ -81,13 +80,49 @@ class BaseLoader(ABC):
 
         return data
 
+    def load_imaging_features(self, dir_path):
+        features = {}
+        for file_ in dir_path.iterdir():
+            fts = pandas.read_csv(file_)
+            for p in fts["patient"].unique():
+                p = str(p)   # make sure patient ID is string for consistency
+                if not (p in features.keys()):
+                    features.update({p: {}})
+                fts_p = fts[fts["patient"] == p]
+                values = fts_p[["name", "value"]].sort_values(by="name", axis=0, ascending=True)["value"].values
+                features[p].update({file_.stem: values})
+        return features
 
 class ARTIX(BaseLoader):
-    # CT vs CBCT: (0008, 0070) Manufacturer of CBCT is 'ELEKTA'
     def __init__(self, path):
         super().__init__(path)
-        self.clinical_key_mapping = {}
-        self.clinical_encoding = {}
+
+        # define values for clinical variables that are the same for every patients
+        # usually inclusion cirteria
+        self.clinical_default_values = {
+            "surgery": "NO",
+            "dose": 70,
+            "treatment": "CH+RT",
+        }
+
+        # mapping between clinical variable names in the dataset and standardized names
+        self.clinical_key_mapping = {
+            "AGE": "age",
+            "SEX": "sex",
+            "ST_HPV": "hpv",
+            "LOC": "localisation",
+            "CHIMIO_TYP": "treatment",
+            # "ECOG": "ecog",
+            # "STAG": "stage",
+            # "FUM": "smoking",
+            # "OH": "alcohol",
+        }
+
+        # encoding of categorical variables (if not already numerical)
+        self.clinical_encoding = {
+            "surgery": {"NO": 0},
+            "treatment": {"CH+RT": 1},
+        }
 
     def build_patients(self, log=None):
         data = []
@@ -196,26 +231,23 @@ class ARTIX(BaseLoader):
     
     def get_features_labels(self, path_=None):
         """
-        Return features and labels as pandas.Dataframe
+            return imaging features, clinical features and rfs as dictionaries with patient ID as key
         """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path(".") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "artix.pickle"), "rb") as f:
             patients = pickle.load(f)
 
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "artix").iterdir():
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.stem
-            fts["patient"] = fts["patient"].apply(lambda i: str(i).zfill(3))
-            features.append(fts)        
-        features = pandas.concat(features)
+        # load imaging features and rename patients into XXX format
+        imaging = self.load_imaging_features(base_path.joinpath("features", "artix"))
+        imaging = {str(k).zfill(3): v for k, v in imaging.items()}
 
-        # build labels
-        label = []
+        # load clinical features and rfs
+        rfs = {}
+        clinical = {}
         for id_, p in patients.items():
+            # make sure patient ID is string and in XXX format for consistency
+            id_ = str(id_).zfill(3)
 
             progdt = p.clinical["PROGDT"]   # date of progression
             rtend = p.clinical["RTENDT"]   # date of end RT
@@ -241,14 +273,33 @@ class ARTIX(BaseLoader):
             else:
                 rfs_T = None
                 rfs_delta = 0
-            
-            label.append({"patient": id_, 
-                          "center": "CEM", # Centre Eugene Marquis
-                          "rfs_T": rfs_T,
-                          "rfs_delta": rfs_delta})
-        label = pandas.DataFrame(label)
 
-        return features, label
+            # add patient to rfs            
+            rfs.update({id_: {"T": rfs_T, "delta": rfs_delta}})
+            
+            # build clinical features
+            for k, v in p.clinical.items():
+                if k in self.clinical_key_mapping.keys():
+                    k = self.clinical_key_mapping[k]
+                    if k in self.clinical_encoding.keys(): # categorical feature
+                        try:
+                            v = self.clinical_encoding[k][v]
+                        except KeyError:
+                            v = None
+                    else: # numerical feature
+                        try:
+                            v = float(v)
+                        except (ValueError, TypeError):
+                            v = None
+
+                    if not(id_ in clinical.keys()):
+                        clinical.update({id_: {}})
+                    clinical[id_].update({k: v})
+            
+            # add center as clinical feature
+            clinical[id_].update({"center": "CEM"}) # Centre Eugene Marquis
+
+        return imaging, clinical, rfs
 
     def get_spatial_transforms():
         tr = [SpatialCrop(roi_start=(0,0,0), roi_end=(1000,1000,400)),]
@@ -260,21 +311,26 @@ class HECKTOR(BaseLoader):
         super().__init__(path)
         self.center_map = {1: 'CHUM', 2: 'CHUP', 3: 'CHUS', 6: 'HGJ', 7: 'HMR', 5: 'MDA', 8: 'USZ'}
 
+        self.clinical_default_values = {
+            "localisation": "oropharynx",
+        }
+
         self.clinical_key_mapping = {
             "Age": "age",
             "Gender": "sex",
-            "Performance Status": "ecog",
+            "HPV Status": "hpv",
+            "Treatment": "treatment",
+            "dose": "dose",
+            "M-stage": "metastasis",
+            # "Performance Status": "ecog",
             # "Tobacco Consumption": "smoking",
             # "Alcohol Consumption": "alcohol",
-            "M-stage": "metastasis",
-            # "HPV Status": "hpv",
-            "Treatment": "treatment",
-            # "dose": "dose",
         }
 
         self.clinical_encoding = {
-            "Performance Status": {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 80: 1, 90: 0, 100: 0},
-            "M-stage": {"M0": 0, "M1": 1},
+            "localisation": {"oropharynx": 0},
+            "ecog": {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 80: 1, 90: 0, 100: 0},
+            "metastasis": {"M0": 0, "M1": 1},
         }
 
     def get_avg_dose_scipy(self, ct, mask, dose):
@@ -386,28 +442,16 @@ class HECKTOR(BaseLoader):
         return df
     
     def get_features_labels(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
+
+        base_path = pathlib.Path(".") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "hecktor.pickle"), "rb") as f:
             patients = pickle.load(f)
 
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "hecktor").iterdir():
-            if file_.name.startswith("llm"):
-                continue
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "image"
-            fts["features"] = file_.stem
-            features.append(fts)
-        features = pandas.concat(features)
+        imaging = self.load_imaging_features(base_path.joinpath("features", "hecktor"))
 
-        # build labels
-        label = []
-        clinical = []
+        rfs = {}
+        clinical = {}
         for id_, p in patients.items():
             try:
                 rfs_T = p.clinical["RFS"]
@@ -416,16 +460,12 @@ class HECKTOR(BaseLoader):
                 rfs_T = None
                 rfs_delta = None
 
-            center = p.clinical["CenterID"]
-            center = self.center_map[center] if center in self.center_map.keys() else center
-            label.append({"patient": id_, 
-                          "center": center,
-                          "rfs_T": rfs_T,
-                          "rfs_delta": rfs_delta})
+            rfs.update({id_: {"T": rfs_T, "delta": rfs_delta}})
 
             # build clinical features
             for k, v in p.clinical.items():
                 if k in self.clinical_key_mapping.keys():
+                    k = self.clinical_key_mapping[k]
                     if k in self.clinical_encoding.keys(): # categorical feature
                         try:
                             v = self.clinical_encoding[k][v]
@@ -436,16 +476,16 @@ class HECKTOR(BaseLoader):
                             v = float(v)
                         except (ValueError, TypeError):
                             v = None
-                    clinical.append({"patient": id_, 
-                                     "modality": 
-                                     "clinical", 
-                                     "features": self.clinical_key_mapping[k], 
-                                     "name": 0, 
-                                     "value": v})
 
-        label = pandas.DataFrame(label)
-        features = pandas.concat([features, pandas.DataFrame(clinical)])
-        return features, label
+                    if not(id_ in clinical.keys()):
+                        clinical.update({id_: {}})
+                    clinical[id_].update({k: v})
+            
+            center = p.clinical["CenterID"]
+            center = self.center_map[center] if center in self.center_map.keys() else center
+            clinical[id_].update({"center": center})
+
+        return imaging, clinical, rfs
 
     def get_spatial_transforms():
         tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,100,0), roi_end=(500,500,300)),]
@@ -551,7 +591,7 @@ class HeadNeckCTAtlas(TCIA):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path(".") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "headneckctatlas.pickle"), "rb") as f:
             patients = pickle.load(f)
@@ -592,39 +632,46 @@ class HeadNeckCTAtlas(TCIA):
 
 
 class HeadNeckPETCT(TCIA):
+    """
+    GTV dose according to center
+        HGJ - 67.5 Gy
+        CHUS - disease specific [50 - 70 Gy]
+        HMR - patient specific [66 - 70 Gy]
+        CHUM - 70 Gy
+    """
     def __init__(self, path):
         super().__init__(path)
 
         self.clinical_key_mapping = {
             "Age": "age",
             "Sex": "sex",
-            "TNM group stage": "stage",
-            "M-stage": "metastasis",
-            # "HPV status": "hpv",
+            "HPV status": "hpv",
             "Primary Site": "localisation",
             "Therapy": "treatment",
+            "dose": "dose",
+            "M-stage": "metastasis",
             "Surgery": "surgery",
-            # "dose": "dose",
+            # "TNM group stage": "stage",
         }
 
         self.clinical_encoding = {
-            "Sex": {"M": 1, "F": 0, "m": 1},
+            "sex": {"M": 1, "F": 0, "m": 1},
 
-            "Primary Site": {"Oropharynx": 0},
+            "localisation": {"Oropharynx": 0},
 
-            "M-stage": {"M0": 0},
+            "metastasis": {"M0": 0},
 
-            "TNM group stage": {"stage III": 3, "stage IIB": 2, "stage IVA": 4, "stage IV": 4, 
+            "stage": {"stage III": 3, "stage IIB": 2, "stage IVA": 4, "stage IV": 4, 
                                 "stage IVB": 4, "stage II": 2, "stage I": 1, "Stade II": 2, 
                                 "Stade III": 3, "Stade IVA": 4, "Stade I": 1, "Stade IVB": 4, 
                                 "Stage III": 3, "Stage IVA": 4, "Stage IIB": 2, "Stage II": 2, 
                                 "Stage IV": 4, "StageII": 2},
             
-            "HPV status": {"-": 0, "+": 1},
+            "hpv": {"-": 0, "+": 1},
 
-            "Therapy": {"chemo radiation": 1, "radiation": 0},
+            "treatment": {"chemo radiation": 1, "radiation": 0},
 
-            "Surgery": {"NO": 0, "YES": 1},
+            "surgery": {"NO": 0, "YES": 1},
         }
 
     def get_patient_clinical_data(self, patient_id):
@@ -659,26 +706,16 @@ class HeadNeckPETCT(TCIA):
         return df
     
     def get_features_labels(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
+
+        base_path = pathlib.Path(".") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "headneckpetct.pickle"), "rb") as f:
             patients = pickle.load(f)
 
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "headneckpetct").iterdir():
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "clinical" if file_.name.startswith("llm") else "image"
-            fts["features"] = file_.stem
-            features.append(fts)        
-        features = pandas.concat(features)
+        imaging = self.load_imaging_features(base_path.joinpath("features", "headneckpetct"))
 
-        # build labels
-        label = []
-        clinical = []
+        rfs = {}
+        clinical = {}
         for id_, p in patients.items():
             diag_endrt_dt = p.clinical["Time – diagnosis to end treatment (days)"]
             diag_lr_dt = p.clinical["Time – diagnosis to LR (days)"]
@@ -703,14 +740,12 @@ class HeadNeckPETCT(TCIA):
                 rfs_T = None
                 rfs_delta = None
 
-            label.append({"patient": id_, 
-                          "center": p.clinical['center'], 
-                          "rfs_T": rfs_T,
-                          "rfs_delta": rfs_delta})
+            rfs.update({id_: {"T": rfs_T, "delta": rfs_delta}})
 
             # build clinical features
             for k, v in p.clinical.items():
                 if k in self.clinical_key_mapping.keys():
+                    k = self.clinical_key_mapping[k]
                     if k in self.clinical_encoding.keys(): # categorical feature
                         try:
                             v = self.clinical_encoding[k][v]
@@ -721,15 +756,12 @@ class HeadNeckPETCT(TCIA):
                             v = float(v)
                         except (ValueError, TypeError):
                             v = None
-                    clinical.append({"patient": id_, 
-                                     "modality": "clinical", 
-                                     "features": self.clinical_key_mapping[k], 
-                                     "name": 0, 
-                                     "value": v})
+
+                    if not(id_ in clinical.keys()):
+                        clinical.update({id_: {}})
+                    clinical[id_].update({k: v})
         
-        features = pandas.concat([features, pandas.DataFrame(clinical)])
-        label = pandas.DataFrame(label)
-        return features, label
+        return imaging, clinical, rfs
 
     def build_patients(self, log=None):
         patients = super().build_patients(log)
@@ -811,7 +843,7 @@ class OropharyngealRadiomicsOutcomes(TCIA):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path(".") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "oropharyngealradiomicsoutcomes.pickle"), "rb") as f:
             patients = pickle.load(f)
@@ -906,7 +938,7 @@ class QINHEADNECK(TCIA):
         """
         Return features and labels as pandas.Dataframe
         """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
+        base_path = pathlib.Path(".") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "qinheadneck.pickle"), "rb") as f:
             patients = pickle.load(f)
@@ -961,37 +993,41 @@ class RADCURE(TCIA):
     def __init__(self, path):
         super().__init__(path)
 
+        self.clinical_default_values = {
+            "surgery": "NO",   # only 3% of patients had surgery
+        }
+
         self.clinical_key_mapping = {
             "Age": "age",
             "Sex": "sex",
-            "ECOG PS": "ecog",
-            # "Smoking Status": "smoking",
-            "Stage": "stage",
-            "METASTASIS": "metastasis",
-            # "HPV": "hpv",
+            "HPV": "hpv",
             "Ds Site": "localisation",
             "Tx Modality": "treatment",
             "Dose": "dose",
+            "METASTASIS": "metastasis",
+            # "ECOG PS": "ecog",
+            # "Stage": "stage",
+            # "Smoking Status": "smoking",
         }
 
         self.clinical_encoding = {
-            "Sex": {"Female": 0, "Male": 1},
+            "sex": {"Female": 0, "Male": 1},
             
-            "ECOG PS": {"ECOG 0": 0, "ECOG 2": 1, "ECOG 1": 0, "ECOG 4": 3, "ECOG 3": 2, "ECOG-Pt 2": 1, 
+            "ecog": {"ECOG 0": 0, "ECOG 2": 1, "ECOG 1": 0, "ECOG 4": 3, "ECOG 3": 2, "ECOG-Pt 2": 1, 
                         "ECOG 0-1": 0, "ECOG-Pt 0": 0, "ECOG-Pt 1": 0},
             
-            "Smoking Status": {"Ex-smoker": 1, "Non-smoker": 0, "Current": 2},
+            "smoking": {"Ex-smoker": 1, "Non-smoker": 0, "Current": 2},
             
-            "Stage": {"IVB": 4, "I": 1, "IVA": 4, "III": 3, "II": 2, "IV": 4, "IIIC": 3, "IB": 1, 
+            "stage": {"IVB": 4, "I": 1, "IVA": 4, "III": 3, "II": 2, "IV": 4, "IIIC": 3, "IB": 1, 
                       "IIA": 2, "IIIA": 3, "IVC": 4, "IIB": 2, "0": 0},
             
-            "HPV": {"Yes, Negative": 0, "Yes, positive": 1},
+            "hpv": {"Yes, Negative": 0, "Yes, positive": 1},
             
-            "Tx Modality": {"RT alone": 0, "ChemoRT": 1, "ChemoRT ": 1, "Postop RT alone": 0},
+            "treatment": {"RT alone": 0, "ChemoRT": 1, "ChemoRT ": 1, "Postop RT alone": 0},
 
-            "Ds Site": {"Oropharynx": 0},
+            "localisation": {"Oropharynx": 0},
 
-            "METASTASIS": {"M0": 0, "MX": None, "M1": 1},
+            "metastasis": {"M0": 0, "MX": None, "M1": 1},
         }
 
     def get_patient_clinical_data(self, patient_id):
@@ -1025,28 +1061,16 @@ class RADCURE(TCIA):
         return df
     
     def get_features_labels(self, path_=None):
-        """
-        Return features and labels as pandas.Dataframe
-        """
-        base_path = pathlib.Path("..") if path_ is None else pathlib.Path(path_)
+
+        base_path = pathlib.Path(".") if path_ is None else pathlib.Path(path_)
 
         with open(base_path.joinpath("pickle datasets", "radcure.pickle"), "rb") as f:
             patients = pickle.load(f)
 
-        # concatenate features and modalities
-        features = []
-        for file_ in base_path.joinpath("features", "radcure").iterdir():
-            if file_.name.startswith("llm"):
-                continue
-            fts = pandas.read_csv(file_)
-            fts["modality"] = "image"
-            fts["features"] = file_.stem
-            features.append(fts)
-        features = pandas.concat(features)
+        imaging = self.load_imaging_features(base_path.joinpath("features", "radcure"))
 
-        # build labels
-        label = []
-        clinical = []
+        rfs = {}
+        clinical = {}
         for id_, p in patients.items():
             try:
                 # add fractions to rt start date to obtain RT end date
@@ -1070,14 +1094,12 @@ class RADCURE(TCIA):
                 rfs_T = None
                 rfs_delta = None
 
-            label.append({"patient": id_, 
-                          "center": "UHN", # University Health Network
-                          "rfs_T": rfs_T,
-                          "rfs_delta": rfs_delta})
+            rfs.update({id_: {"T": rfs_T, "delta": rfs_delta}})
             
             # build clinical features
             for k, v in p.clinical.items():
                 if k in self.clinical_key_mapping.keys():
+                    k = self.clinical_key_mapping[k]
                     if k in self.clinical_encoding.keys(): # categorical feature
                         try:
                             v = self.clinical_encoding[k][v]
@@ -1088,15 +1110,12 @@ class RADCURE(TCIA):
                             v = float(v)
                         except ValueError:
                             v = None
-                    clinical.append({"patient": id_, 
-                                     "modality": "clinical", 
-                                     "features": self.clinical_key_mapping[k], 
-                                     "name": 0, 
-                                     "value": v})
+
+                    if not(id_ in clinical.keys()):
+                        clinical.update({id_: {}})
+                    clinical[id_].update({k: v})
         
-        label = pandas.DataFrame(label)
-        features = pandas.concat([features, pandas.DataFrame(clinical)])
-        return features, label
+        return imaging, clinical, rfs
 
     def get_spatial_transforms():
         tr = [Flip(spatial_axis=-1), SpatialCrop(roi_start=(0,0,0), roi_end=(512,512,300)),]

@@ -78,13 +78,15 @@ class FineTuneTrainer(BaseTrainer):
         self.lr_scheduler = lr_scheduler
         self.class_weights = class_weights
 
-    def train(self, model, device, train_loader, valid_loader=None, test_loader=None):
+    def train(self, model, device, training_loader, validation_loader=None, external_loader=None):
         """
         Docstring for train
         
-        :param model: (nn.Module) model to train
-        :param device: (str, torch.device) device for model training
-        :param train_loader: (DataLoader) dataloader for training data
+        model (nn.Module) model to train
+        device (str, torch.device) device for model training
+        training_loader (DataLoader) dataloader for training data
+        validation_loader (DataLoader) dataloader for validation data
+        external_loader (List[DataLoader]) dataloader for external test data
         """
         # set model to train mode
         model.train()
@@ -97,12 +99,12 @@ class FineTuneTrainer(BaseTrainer):
 
         # divide learning rate by 2 each 5 epochs
         if self.lr_scheduler:
-            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=30, gamma=0.5)
+            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=10, gamma=0.5)
         else:
             scheduler = None
 
         if self.class_weights:
-            train_loader.cw = train_loader.comput_class_weights()
+            training_loader.cw = training_loader.compute_class_weights()
 
         # send model to device
         model.to(device)
@@ -117,7 +119,7 @@ class FineTuneTrainer(BaseTrainer):
             # =====================   train iteration   =====================
             model.train()   # set to train mode
 
-            for batch in train_loader.batch_iterator(self.bsize, sample_weight=self.class_weights):
+            for batch in training_loader.batch_iterator(self.bsize, sample_weight=self.class_weights):
                 # stop if StopIteration returned
                 if batch is StopIteration:
                     break
@@ -141,19 +143,23 @@ class FineTuneTrainer(BaseTrainer):
             model.eval() # set to eval mode
 
             # train/val
-            for split, loader in [("train", train_loader), ("valid", valid_loader), ("test", test_loader)]:
-                split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loader, self.bsize, device)
+            for split, loader in [("train", training_loader), ("valid", validation_loader)]:
+                split_metrics, _ = self.evaluate(model, loader, self.bsize, device)
                 for m, v in split_metrics.items():
                     metrics.append({"split": split, "metric": m, "value": v, "step": epoch})
-                
-                if split == "test":
+
+            # external test
+            for loader in external_loader:
+                split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loader, self.bsize, device)
+                for m, v in split_metrics.items():
+                    metrics.append({"split": "test", "dataset": loader.data.cohort, "metric": m, "value": v, "step": epoch})
                     test_pred_proba.append({"step": epoch, "y_true": y_true, "y_pred_proba": y_pred_proba})
             
-            # save checkpoint if current validation loss is lowest
-            validation_loss = pandas.DataFrame(metrics)
-            validation_loss = validation_loss[(validation_loss["metric"] == "log_loss") & (validation_loss["split"] == "valid")]
-            validation_loss = validation_loss["value"].values
-            if validation_loss[-1] == min(validation_loss):
+            # save checkpoint if current validation balanced accuracy is best
+            validation_metric = pandas.DataFrame(metrics)
+            validation_metric = validation_metric[(validation_metric["metric"] == "balanced_accuracy") & (validation_metric["split"] == "valid")]
+            validation_metric = validation_metric["value"].values
+            if validation_metric[-1] == max(validation_metric):
                 best_state_dict = model.state_dict()
             # =========================================================================
 
@@ -177,7 +183,7 @@ class CoxProtoNetTrainer(BaseTrainer):
         
         :param model: (nn.Module) model to train
         :param device: (str, torch.device) device for model training
-        :param train_loader: (DataLoader) dataloader for training data
+        :param train_loader: (CoxProtoNetLoader) dataloader for training data
         """
         # set model to train mode
         model.train()
@@ -210,7 +216,7 @@ class CoxProtoNetTrainer(BaseTrainer):
                     break
             pos, neg = batch
             
-            # compute later feature representation
+            # compute feature representation
             pos = model(send_to_device(pos, device))
             neg = model(send_to_device(neg, device))
 
@@ -258,7 +264,7 @@ class ProtoNetTrainer:
         
         :param model: (nn.Module) model to train
         :param device: (str, torch.device) device for model training
-        :param train_loader: (DataLoader) dataloader for training data
+        :param train_loader: (ProtoNetLoader) dataloader for training data
         """
         # set model to train mode
         model.train()

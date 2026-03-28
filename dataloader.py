@@ -1,315 +1,333 @@
 import math
+import random
 from itertools import chain
+from more_itertools import collapse, chunked
 import numpy as np
-import pandas
 import torch
-import sklearn
-from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, Normalizer
 
-from datasets import ARTIX, HECKTOR, HeadNeckCTAtlas, HeadNeckPETCT, QINHEADNECK, OropharyngealRadiomicsOutcomes, RADCURE
-from datasets import CATEGORICAL_CLINICAL_VARIABLES
+from datasets import cohorts_map, CATEGORICAL_CLINICAL_VARIABLES
+
+def get_normalizer(method="scale"):
+    match method:
+        case "scale":
+            return StandardScaler()
+        case "minmax":
+            return MinMaxScaler(feature_range=(0,1))
+        case "unit":
+            return Normalizer()
+        case _:
+            return StandardScaler()
 
 
-class Normalizer:
-    def __init__(self, method=None):
-        match method:
-            case "scale":
-                self.normalizer = sklearn.preprocessing.StandardScaler()
-            case "minmax":
-                self.normalizer = sklearn.preprocessing.MinMaxScaler(feature_range=(0,1))
-            case "unit":
-                self.normalizer = sklearn.preprocessing.Normalizer()
-            case _:
-                self.normalizer = sklearn.preprocessing.StandardScaler()
-    
-    def fit_transform(self, X):
-        X.loc[:,:] = self.normalizer.fit_transform(X.values)
-        return X
-
-    def transform(self, X):
-        X.loc[:,:] = self.normalizer.transform(X.values)
-        return X
-    
-    def get_params(self):
-        return self.normalizer.__getstate__()
-
-    def set_params(self, params):
-        self.normalizer.__setstate__(params)
-
-class MultiCenterStratifiedBootstrapSplitter:
-    def __init__(self, Y):
-        self.Y = Y
-
-    def split(self, bootstrap, train_test_split, train_val_split, per_center=False):
+class Sample:
+    def __init__(self, id_, imaging=None, clinical=None, rfs=None, label=None):
         """
-        Split data with stratified bootstraps
-
-        bootstrap (int) number of bootstrap iterations
-        train_test_split (float) train data factor for training, the rest is for testing
-        train_val_split (float) train/validation data factor for training, the rest is for validation
-        per_center (bool) wether to split data seaparatly according to center
+        Docstring for __init__
+            id_ (str): sample/patient id
+            imaging (dict): dictionary of imaging features, with keys as FM and values as feature values
+            clinical (dict): dictionary of clinical features, with keys as feature names and values as feature values
+            rfs (dict): dictionary with keys "T" and "delta" for RFS time and event indicator
+            label (int): binary label for classification task
         """
+        self.id_ = id_
+        self.imaging = imaging
+        self.clinical = clinical
+        self.rfs = rfs
+        self.label = label
 
-        if per_center:
-            # define indices and labels
-            sample_idx = {c: np.array(self.Y[self.Y["center"] == c].index) for c in self.Y["center"].unique()}
-            sample_labels = {c: self.Y[self.Y["center"] == c]["label"] for c in self.Y["center"].unique()}
+    def filter_imaging_features(self, extractors):
+        if not(self.imaging is None):
+            self.imaging = {k: v for k, v in self.imaging.items() if k in extractors}
 
-            # stratified kfold split to ensure similar label distribution across folds
-            skf = {c: StratifiedShuffleSplit(n_splits=bootstrap, train_size=train_test_split).split(sample_idx[c], sample_labels[c].values) for c in self.Y["center"].unique()}
-
-            for _ in range(bootstrap):
-                train_idx = {}
-                val_idx = {}
-                test_idx = {}
-                for c, skfold in skf.items():
-                    train_idx_center, test_idx_center = next(skfold)
-                    sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
-                    train_idx_center_, val_idx_center_ = next(sss.split(sample_idx[c][train_idx_center], sample_labels[c].loc[sample_idx[c][train_idx_center]]))
-                    train_idx.update({c: sample_idx[c][train_idx_center][train_idx_center_]})
-                    val_idx.update({c: sample_idx[c][train_idx_center][val_idx_center_]})
-                    test_idx.update({c: sample_idx[c][test_idx_center]})
-                
-                # concatenate indices from different centers
-                train_idx = np.concatenate(list(train_idx.values()))
-                val_idx = np.concatenate(list(val_idx.values()))
-                test_idx = np.concatenate(list(test_idx.values()))
-                yield train_idx, val_idx, test_idx
-            return StopIteration
-        else:
-            # define indices
-            sample_idx = np.array(self.Y.index)
-
-            # stratified kfold split to ensure similar label distribution across folds
-            skf = StratifiedShuffleSplit(n_splits=bootstrap, train_size=train_test_split)
-
-            for train_idx, test_idx in skf.split(sample_idx, self.Y["label"].values):
-                sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
-                train_idx_, val_idx_ = next(sss.split(sample_idx[train_idx], self.Y.loc[sample_idx[train_idx]]["label"].values))
-                yield sample_idx[train_idx][train_idx_], sample_idx[train_idx][val_idx_], sample_idx[test_idx]
-            return StopIteration
+    def get_features_dimension(self):
+        dim = {}
         
-
-class MultiCenterStratifiedKFoldSplitter:
-    def __init__(self, Y):
-        self.Y = Y
-
-    def split(self, kfold, train_val_split=0.6, per_center=False):
-        """
-        Split data with stratified k-fold
-
-        kfold (int) number of folds for k-fold cross-validation
-        train_val_split (float) training data factor for splitting into training/validation split
-        per_center (bool) wether to split data seaparatly according to center
-        """
-
-        if per_center:
-            # define indices and labels
-            sample_idx = {c: np.array(self.Y[self.Y["center"] == c].index) for c in self.Y["center"].unique()}
-            sample_labels = {c: self.Y[self.Y["center"] == c]["label"] for c in self.Y["center"].unique()}
-
-            # stratified kfold split to ensure similar label distribution across folds
-            skf = {c: StratifiedKFold(n_splits=kfold, shuffle=True).split(sample_idx[c], sample_labels[c].values) for c in self.Y["center"].unique()}
-
-            for _ in range(kfold):
-                train_idx = {}
-                val_idx = {}
-                test_idx = {}
-                for c, skfold in skf.items():
-                    train_idx_center, test_idx_center = next(skfold)
-                    sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
-                    train_idx_center_, val_idx_center_ = next(sss.split(sample_idx[c][train_idx_center], sample_labels[c].loc[sample_idx[c][train_idx_center]]))
-                    train_idx.update({c: sample_idx[c][train_idx_center][train_idx_center_]})
-                    val_idx.update({c: sample_idx[c][train_idx_center][val_idx_center_]})
-                    test_idx.update({c: sample_idx[c][test_idx_center]})
-                
-                # concatenate indices from different centers
-                train_idx = np.concatenate(list(train_idx.values()))
-                val_idx = np.concatenate(list(val_idx.values()))
-                test_idx = np.concatenate(list(test_idx.values()))
-                yield train_idx, val_idx, test_idx
-            return StopIteration
+        if self.imaging is None:
+            dim.update({"image": None})
         else:
-            # define indices
-            sample_idx = np.array(self.Y.index)
-
-            # stratified kfold split to ensure similar label distribution across folds
-            skf = StratifiedKFold(n_splits=kfold, shuffle=True)
-
-            for train_idx, test_idx in skf.split(sample_idx, self.Y["label"].values):
-                sss = StratifiedShuffleSplit(n_splits=1, train_size=train_val_split)
-                train_idx_, val_idx_ = next(sss.split(sample_idx[train_idx], self.Y.loc[sample_idx[train_idx]]["label"].values))
-                yield sample_idx[train_idx][train_idx_], sample_idx[train_idx][val_idx_], sample_idx[test_idx]
-            return StopIteration
+            dim.update({"image": {k: len(v) for k, v in self.imaging.items()}})
+        
+        if self.clinical is None:
+            dim.update({"clinical": None})
+        else:
+            dim.update({"clinical": len(self.clinical)})
+        
+        return dim
 
 
-class DataLoader:
-    def __init__(self, base_path, name, X=None, Y=None, uniform_sampling=False, class_weights=False):
+class Data:
+    def __init__(self, base_path, cohort, samples=None, **kwargs):
         self.base_path = base_path
-        self.name = name
-        self.X = X
-        self.Y = Y
-        self.uniform_sampling = uniform_sampling
-        self.class_weights = class_weights
-
-        if class_weights and not(Y is None):
-            self.cw = self.comput_class_weights()
+        self.cohort = cohort
+        self.samples = samples
 
     def len(self):
-        return len(self.Y)
-    
-    def __getitem__(self, idx):
-        return self.X.loc[idx], self.Y.loc[idx]
+        return len(self.samples) if self.samples else 0
 
-    def one_hot_encode(self, value, max_value):
-        one_hot = np.zeros(int(max_value) + 1)
-        one_hot[int(value)] = 1
-        return one_hot
-
-    def load(self):
-        match self.name:
-            case "artix":
-                loader = ARTIX
-            case "hecktor":
-                loader = HECKTOR
-            case "headneckctatlas":
-                loader = HeadNeckCTAtlas
-            case "headneckpetct":
-                loader = HeadNeckPETCT
-            case "qinheadneck":
-                loader = QINHEADNECK
-            case "oropharyngealradiomicsoutcomes":
-                loader = OropharyngealRadiomicsOutcomes
-            case "radcure":
-                loader = RADCURE
-            case _:
-                raise ValueError(f"dataset name {self.name} not recognized. See args.dataset argument choices.")
+    def load(self, split=None):
+        try:
+            loader = cohorts_map[self.cohort]
+        except KeyError:
+            raise ValueError(f"dataset name {self.cohort} not recognized. See args.dataset argument choices.")
             
-        loader = loader(None)
-        x, y = loader.get_features_labels(self.base_path)
-        self.X = x
-        self.Y = y
+        imaging, clinical, rfs = loader(None).get_features_labels(self.base_path)
+        patients_id = set([*imaging.keys(), *clinical.keys(), *rfs.keys()])
+        self.samples = []
+        for p in patients_id:
+            # check for RADCURE patients split
+            if self.cohort == "radcure" and split == "training" and clinical[p]["RADCURE-challenge"] == "test":
+                    # skip patient if in RADCURE test split while loading training split
+                    continue
 
-    def inclusion_criteria_clinical_features(self, row):
-        """
-        Return True if feature value corresponds to inclusion criteria, False otherwise
-        """
+            img = imaging[p] if p in imaging.keys() else None
+            cl = clinical[p] if p in clinical.keys() else None
+            rf = rfs[p] if p in rfs.keys() else None
+            self.samples.append(Sample(id_=p, imaging=img, clinical=cl, rfs=rf))
 
-        if row["value"] is None:
-            return False
+    def compute_labels(self, task):
+        match task:
+            case "rfs_2":
+                T = 2
+            case "rfs_5":
+                T = 5
+            case _:
+                raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
+        
+        for sample in self.samples:
+            if sample.rfs is None or sample.rfs["T"] is None:
+                label = None
+            elif sample.rfs["T"] < T*365:
+                if sample.rfs["delta"] == 1:
+                    label = 0
+                else:
+                    label = None
+            else:
+                label = 1
+            
+            # update sample label
+            sample.label = label
 
-        match row["features"]:
+    def filter_clinical_features(self, clinical_variables):
+        for sample in self.samples:
+            if sample.clinical is None:
+                continue
+            sample.clinical = {k: v for k, v in sample.clinical.items() if k in clinical_variables}
+
+    def filter_imaging_features(self, extractors):
+        for sample in self.samples:
+            sample.filter_imaging_features(extractors)
+
+    def inclusion_criteria_clinical(self, clinical_variable, value):
+        if value is None:
+            # include patient even if inclusion criteria variable is missing !!
+            return True
+
+        match clinical_variable:
             case "dose":
-                return 64 <= row["value"] and row["value"] < 80
+                return 64 <= value and value < 80
             case "metastasis":
-                return row["value"] == 0
+                return value == 0
             case "localisation":
-                return row["value"] == 0
+                return value == 0
             case "treatment":
-                return row["value"] in [0,1]
+                return value in [0,1]
             case "surgery":
-                return row["value"] == 0
+                return value == 0
             case _:
                 # if variable not in inclusion criteria list, include it anyways
                 return True
+    
+    def apply_inclusion_criteria(self):
+        # filter patients according to inclusion criteria on clinical variables
+        self.samples = [s for s in self.samples if all([self.inclusion_criteria_clinical(i, j) for i, j in s.clinical.items()])]
+
+    def check_imaging(self, sample, exp_params):
+        if sample.imaging is None:
+            return False
+        elif not all([i in sample.imaging.keys() for i in exp_params["extractors"]]):
+            return False
+        else:
+            return True
+        
+    def check_clinical(self, sample, exp_params):
+        if sample.clinical is None:
+            return False
+        elif not all([k in sample.clinical.keys() for k in exp_params["clinical"]]):
+            return False
+        elif any([sample.clinical[k] is None for k in exp_params["clinical"]]):
+            return False
+        else:
+            return True
+
+    def filter_patients(self, exp_params):
+        # filter patients with missing data for selected modality or label
+        # preserve patients with missing label but available RFS time for Cox model pre-training
+        invalid_samples = []
+        cox_samples = []
+        for s in self.samples:
+            if (exp_params["modality"] == "image" and not(self.check_imaging(s, exp_params))) or \
+                    (exp_params["modality"] == "clinical" and not(self.check_clinical(s, exp_params))) or \
+                        (exp_params["modality"] == "both" and (not(self.check_imaging(s, exp_params)) or not(self.check_clinical(s, exp_params)))):
+                # missing data
+                invalid_samples.append(s.id_)
+            elif s.label is None:
+                if not(s.rfs is None) and not(s.rfs["T"] is None):
+                    cox_samples.append(s.id_)
+                else:
+                    invalid_samples.append(s.id_)
+            else:
+                pass
+
+        # select samples for Cox pre-training
+        cox_samples = [s for s in self.samples if s.id_ in cox_samples]
+
+        # remove invalid and cox samples from dataset
+        self.samples = [s for s in self.samples if not(s.id_ in invalid_samples or s.id_ in cox_samples)]
+
+        return cox_samples
+
+    def get_features_dimension(self):
+        return self.samples[0].get_features_dimension()
+    
+    def normalize_image_features(self, normalizer=None):
+        if isinstance(normalizer, (StandardScaler, MinMaxScaler, Normalizer)):
+            for sample in self.samples:
+                sample.imaging = {k: normalizer.transform(v) for k,v in sample.imaging.items()}
+        else:        
+            # fit normalizer
+            training_data = {k: np.stack([s.imaging[k] for s in self.samples], axis=0) for k in self.samples[0].keys()}
+            normalizer = {k: get_normalizer(str(normalizer)).fit(training_data[k]) for k in training_data.keys()}
+
+            # transform all data with fitted normalizer
+            for sample in self.samples:
+                sample.imaging = {k: normalizer[k].transform(sample.imaging[k]) for k in sample.imaging.keys()}
+            
+            return normalizer
+        
+    def normalize_clinical_features(self):
+        for sample in self.samples:
+            if "age" in sample.clinical.keys():
+                sample.clinical["age"] /=  100.
+            if "dose" in sample.clinical.keys():
+                sample.clinical["dose"] /= 70.
+
+    def get_max_clinical_values(self):
+        max_values = {}
+        for sample in self.samples:
+            if not(sample.clinical is None):
+                for k, v in sample.clinical.items():
+                    if k in CATEGORICAL_CLINICAL_VARIABLES:
+                        if k not in max_values.keys() or v > max_values[k]:
+                            max_values[k] = v
+        return max_values
+    
+    def one_hot_encode(self, value, max_value):
+        if max_value > 1:
+            one_hot = np.zeros(int(max_value) + 1)
+            one_hot[int(value)] = 1
+            return one_hot
+        else:
+            return value
+    
+    def one_hot_encode_clinical_features(self, max_clinical_values):
+        for sample in self.samples:
+            sample.clinical = {k: self.one_hot_encode(sample.clinical[k], max_clinical_values[k]) if k in CATEGORICAL_CLINICAL_VARIABLES else sample.clinical[k] for k in sample.clinical.keys()}
+    
+    def convert_to_tensor(self):
+        for sample in self.samples:
+            if not(sample.imaging is None):
+                sample.imaging = {k: torch.tensor(v, dtype=torch.float32) for k, v in sample.imaging.items()}
+            if not(sample.clinical is None):
+                # concatenate clinical features by ordered key to ensure same order across samples and cohorts !!
+                sample.clinical = torch.tensor(list(collapse([sample.clinical[k] for k in sorted(sample.clinical.keys())], dtype=torch.float32)))
+        
+    def undersampling(self):
+        labels = [s.label for s in self.samples]
+        label_counts = {i: labels.count(i) for i in set(labels)}
+        n = min(label_counts.values())
+        candidates = {i: [s for s in self.samples if s.label == i] for i in label_counts.keys()}
+        selected_samples = {i: random.sample(candidates[i], n) for i in candidates.keys()}
+        self.samples = list(chain.from_iterable(selected_samples.values()))
+
+    def stack_to_batch(self):
+        """
+        Stack samples features in batch tensors for training
+        This function requires that features are already converted to tensors see convert_to_tensor() function
+        """
+        # initialize empty batch dictionary
+        batch = {}
+        
+        # stack imaging features
+        if not(self.samples[0].imaging is None):
+            batch.update({"image": {k: [] for k in self.samples[0].imaging.keys()}})
+            for sample in self.samples:
+                for k in sample.imaging.keys():
+                    batch["image"][k].append(sample.imaging[k])
+            batch["image"] = {k: torch.stack(v, dim=0) for k,v in batch["image"].items()}
+
+        # stack clinical features
+        if not(self.samples[0].clinical is None):
+            batch["clinical"] = torch.stack([sample.clinical for sample in self.samples], dim=0)
+        
+        return batch
+
+class DataLoader:
+    def __init__(self, data, split, class_weights=False):
+        """
+        Docstring for __init__
+        
+        data (Data) : internal dataset to use for pre-training and training
+        split (str) : split of dataloader
+        class_weights (bool) : wether to return class weights for loss function during iteration over data
+        """
+        self.data = data
+        self.split = split
+        self.class_weights = class_weights
+
+    def load(self):
+        self.data.load(self.split)
 
     def preprocess(self, exp_params, task):
         """
+        compute patients label according to task definition and RFS data
         remove patients with missing data or invalid label
         prepare data for training according to experiment parameters and task
-        keep only modalities and imaging features defined in exp_params
+        keep only modalities and features type defined in exp_params
         """
-
-        def row_to_label(row):
-            if task == "rfs_2":
-                T = 2
-            elif task == "rfs_5":
-                T = 5
-            else:
-                raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
-
-            if row["rfs_T"] is None:
-                return None
-            elif row["rfs_T"] < T*365:
-                if row["rfs_delta"] == 1:
-                    return 0
-                else:
-                    return None
-            else:
-                return 1
-
-        # select only imaging features defined in exp_params
-        self.X = self.X[(self.X["modality"] != "image") | ((self.X["modality"] == "image") & (self.X["features"].isin(exp_params["extractors"])))]
-
-        # one hot encode categorical clinical variables
-        X_clinical = self.X[self.X["modality"] == "clinical"]
-        df = []
-        for _, row in X_clinical.iterrows():
-            if not(self.inclusion_criteria_clinical_features(row)):
-                continue
-            
-            try:
-                if row["features"] in CATEGORICAL_CLINICAL_VARIABLES:
-                    max_value = X_clinical[X_clinical["features"] == row["features"]]["value"].max()
-                    if max_value > 1:
-                        one_hot = self.one_hot_encode(row["value"], max_value)
-                        for i, v in enumerate(one_hot):
-                            df.append({"patient": row["patient"], "modality": row["modality"], "features": row["features"], "name": i, "value": v})
-                    else:
-                        df.append(row.to_dict())
-                else:
-                    df.append(row.to_dict())
-            except (ValueError, TypeError):
-                continue
         
-        X_clinical = pandas.DataFrame(df)
-        X_image = self.X[self.X["modality"] != "clinical"]
+        # compute labels according to task definition
+        self.data.compute_labels(task)
+        
+        # filter patients according to inclusion criteria on clinical variables
+        self.data.apply_inclusion_criteria()
 
-        # merge modalities
-        if exp_params["modality"] == "image":
-            self.X = X_image
-        elif exp_params["modality"] == "clinical":
-            self.X = X_clinical
+        # one-hot encode and categorical and filter clinical variables
+        self.data.filter_clinical_features(exp_params["clinical"])
+
+        # select imaging features defined in exp_params  
+        self.data.filter_imaging_features(exp_params["extractors"])
+
+        # select modality(ies)
+        if exp_params["modality"] == "image":   # remove clinical features
+            for sample in self.data.samples:
+                sample.clinical = None
+        elif exp_params["modality"] == "clinical": # remove imaging features
+            for sample in self.data.samples:
+                sample.imaging = None
         else:
-            self.X = pandas.concat([X_image, X_clinical], ignore_index=True)
-
-        # pivot dataframe and sort columns names
-        self.X = self.X.pivot(index="patient", columns=["modality", "features", "name"], values="value")
-        self.X = self.X.sort_index(axis="columns")
-
-        # set patient as index for labels dataframe and compute label column according to task
-        self.Y = self.Y.set_index("patient")        
-        self.Y["label"] = self.Y.apply(row_to_label, axis=1)
-
-        # remove patients with invalid label, missing data or uncommon between X and Y
-        invalid_label_patients = self.Y[self.Y["label"].isna()].index
-        missing_data_patients = self.X[self.X.isna().any(axis=1)].index
-        uncommon_patients = [
-            *[p for p in self.X.index if not(p in self.Y.index)],
-            *[p for p in self.Y.index if not(p in self.X.index)]
-        ]
-        remove_indices = [*invalid_label_patients, *missing_data_patients, *uncommon_patients]
-
-        # patients that are filtered but should be preserved for Cox model training 
-        # (those with missing label but available RFS time)
-        preserve_Cox_idx = self.Y[(self.Y["label"].isna()) & (self.Y["rfs_T"] != None)].index
-        preserve_Cox_idx = [i for i in preserve_Cox_idx if not(i in [*missing_data_patients, *uncommon_patients])]
-        self.Cox_X = self.X.loc[preserve_Cox_idx]
-        self.Cox_Y = self.Y.loc[preserve_Cox_idx]
-
-        # remove filtered patients from dataset
-        self.X = self.X.drop(index=remove_indices, errors="ignore")
-        self.Y = self.Y.drop(index=remove_indices, errors="ignore")
-
-        # if using loss class weighting, compute class weights
-        if self.class_weights:
-            self.cw = self.comput_class_weights()
-
-    def comput_class_weights(self, t=0.01):
-        if self.Y is None:
-            raise ValueError("self.Y must be initialized before computing class weights")
+            pass
         
-        freq = dict(self.Y['label'].value_counts())   # frequence dict
+        # filter samples with missing data for selected modality or label
+        # preserve internal patients with missing label but available RFS time for Cox model pre-training
+        if self.split == "training":
+            self.cox_samples = self.data.filter_patients(exp_params)
+        else:
+            self.data.filter_patients(exp_params)
+    
+    def compute_class_weights(self, t=0.01):
+        labels = [s.label for s in self.data.samples if not(s.label is None)]
+        freq = {i: labels.count(i) for i in set(labels)}
         cw = torch.zeros(len(freq), dtype=torch.float32)
         for i in freq.keys():   # populate values with inverse frequence
             i = int(i)
@@ -317,131 +335,58 @@ class DataLoader:
         cw = torch.softmax(cw / t, dim=0)   # apply softmax with temperature to increase heterogeneity
         cw = (cw - cw.mean()) + 1   # center values around 1
         return cw
-
-    def split(self, bootstrap=None, kfold=None, train_test_split=0.75, train_val_split=0.66, per_center=False):
+    
+    def split(self):
         """
-        split data into kfold train/validation/test sets
-        
-        bootstrap (int) number of bootstrap iterations
-        kfold (int) number of folds for k-fold cross-validation
-        train_test_split (float) proportion of training data used for training/testing (only if bootstrap is not None)
-        train_val_split (float) proportion of training data used for training/validation (only if bootstrap is not None)
-        per_center (bool) wether to split data seaparatly according to center
+        Split data into training and validation according to RADCURE challenge definition
         """
-
-        if bootstrap and kfold:
-            raise ValueError("exactly one of bootstrap or kfold argument must be provided")
+        training = []
+        validation = []
+        for sample in self.data.samples:
+            if sample.clinical["RADCURE-challenge"] == "training":
+                training.append(sample)
+            else:
+                validation.append(sample)
         
-        if bootstrap:
-            splitter = MultiCenterStratifiedBootstrapSplitter(self.Y)
-            for train_idx, val_idx, test_idx in splitter.split(bootstrap, train_test_split, train_val_split, per_center):
-                # (train data), (val data), (test data)
-                yield (self.X.loc[train_idx], self.Y.loc[train_idx]), (self.X.loc[val_idx], self.Y.loc[val_idx]), (self.X.loc[test_idx], self.Y.loc[test_idx])
-            return StopIteration
-        else:
-            splitter = MultiCenterStratifiedKFoldSplitter(self.Y)
-            for train_idx, val_idx, test_idx in splitter.split(kfold, train_val_split, per_center):
-                # (train data), (val data), (test data)
-                yield (self.X.loc[train_idx], self.Y.loc[train_idx]), (self.X.loc[val_idx], self.Y.loc[val_idx]), (self.X.loc[test_idx], self.Y.loc[test_idx])
-            return StopIteration
-
-    def undersampling(self, per_center=False):
-        if per_center:
-            idx = []
-            for center in self.Y["center"].unique():
-                label_counts = self.Y[self.Y["center"] == center]['label'].value_counts()
-                n = min(label_counts.values)
-                if n == 0:
-                    idx.append(self.Y[self.Y["center"] == center].index)
-                else:
-                    for i in label_counts.keys():
-                        idx.append(np.random.choice(self.Y[(self.Y["center"] == center) & (self.Y["label"] == i)].index, size=n, replace=False))
-            idx = np.concatenate(idx, axis=0)
-        else:
-            label_counts = self.Y['label'].value_counts()
-            n = min(label_counts.values)
-            idx = [np.random.choice(self.Y[self.Y["label"] == i].index, size=n, replace=False) for i in label_counts.keys()]
-            idx = np.concatenate(idx, axis=0)
-        self.X = self.X.loc[idx]
-        self.Y = self.Y.loc[idx]
-
+        training_loader = DataLoader(Data(self.data.base_path, self.data.cohort, training), "training", class_weights=self.class_weights)
+        validation_loader = DataLoader(Data(self.data.base_path, self.data.cohort, validation), "validation")
+        return training_loader, validation_loader
+    
+    def get_features_dimension(self):
+        return self.data.get_features_dimension()
+    
     def normalize_image_features(self, normalizer=None):
         if isinstance(normalizer, Normalizer):
-            self.X.loc[:, ["image"]] = normalizer.transform(self.X.loc[:, ["image"]])
+            self.data.normalize_image_features(normalizer)
         else:
-            normalizer = Normalizer(normalizer)
-            self.X.loc[:, ["image"]] = normalizer.fit_transform(self.X.loc[:, ["image"]])
+            normalizer = self.data.normalize_image_features(normalizer)
             return normalizer
-        
+
     def normalize_clinical_features(self):
-        if "age" in self.X.columns.get_level_values("features"):
-            self.X.loc[:, ("clinical", "age")] = self.X.loc[:, ("clinical", "age")].values / 100.
-        if "dose" in self.X.columns.get_level_values("features"):
-            self.X.loc[:, ("clinical", "dose")] = self.X.loc[:, ("clinical", "dose")].values / 70.
-
-    def get_random_batch(self, n, sample_weight=False):
-        """
-        get random batch taking into account centers equality
-        """
-        if self.uniform_sampling:
-            centers = self.Y["center"].unique()
-            n_per_center = math.ceil(n / len(centers))
-            idx = []
-            for c in centers:
-                indices = self.Y[self.Y["center"] == c].index
-                # take random sample as min between center size and batch/centers, otherwise error of sampling
-                idx.append(np.random.choice(indices, size=min(len(indices), n_per_center), replace=False))
-            idx = list(chain.from_iterable(idx))[:n]
-        else:
-            idx = np.random.choice(self.X.index, size=n, replace=False)
-        
-        x = self.X.loc[idx]
-        y = self.Y.loc[idx]
-
-        x = {m: {
-                k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()
-            } for m in x.columns.get_level_values("modality").unique()}
-        y = torch.tensor(y["label"].values)
-
-        if sample_weight:
-            cw = self.cw[y.to(dtype=torch.long)]
-            return x, y, cw
-        else:
-            return x, y
+        self.data.normalize_clinical_features()
     
-    def get_random_batch_posneg(self, n):
-        x_pos = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 1].index, size=n)]
-        x_neg = self.X.loc[np.random.choice(self.Y[self.Y["label"] == 0].index, size=n)]
-
-        x_pos = {m: {
-                k: torch.tensor(x_pos[(m, k)].values, dtype=torch.float32) for k in x_pos.columns.get_level_values("features")[x_pos.columns.get_level_values("modality") == m].unique()
-            } for m in x_pos.columns.get_level_values("modality").unique()}
-        
-        x_neg = {m: {
-                k: torch.tensor(x_neg[(m, k)].values, dtype=torch.float32) for k in x_neg.columns.get_level_values("features")[x_neg.columns.get_level_values("modality") == m].unique()
-            } for m in x_neg.columns.get_level_values("modality").unique()}
-        
-        return x_pos, x_neg
+    def convert_to_tensor(self):
+        self.data.convert_to_tensor()
     
+    def undersampling(self):
+        self.data.undersampling()
+    
+    def get_labels(self):
+        return [s.label for s in self.data.samples]
+
+    def get_max_clinical_values(self):
+        return self.data.get_max_clinical_values()
+    
+    def one_hot_encode_clinical_features(self, max_clinical_values):
+        self.data.one_hot_encode_clinical_features(max_clinical_values)
+
     def batch_iterator(self, batch_size, sample_weight=False, skip_singleton_batch=True):
-        for idx in range(0, len(self.Y), batch_size):   # handle case where dataset smaller than batch size
-            indices = self.Y.index[idx:idx+batch_size]
-
-            if skip_singleton_batch and len(indices) < 2:
+        for batch in chunked(self.data.samples, batch_size):
+            if skip_singleton_batch and len(batch) < 2:
                 return StopIteration   # stop if batch size is 1 (BatchNorm error)
             
-            x = self.X.loc[indices]
-            y = self.Y.loc[indices]
-
-            x_ = {}
-            for m in x.columns.get_level_values("modality").unique():
-                if m == "image":
-                    x_.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
-                else:
-                    x_.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
-            x = x_
-            
-            y = torch.tensor(y["label"].values)
+            x = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=batch).stack_to_batch()
+            y = torch.tensor([s.label for s in batch])
 
             if sample_weight:
                 cw = self.cw[y.to(dtype=torch.long)]
@@ -453,93 +398,72 @@ class DataLoader:
 
 
 class CoxProtoNetLoader:
-    def __init__(self, X, Y):
-        self.X = X
-        self.Y = Y
-
-    def __len__(self):
-        return len(self.neg_idx) + len(self.pos_idx)
-
+    def __init__(self, data):
+        self.data = data
+    
     def prepare_data(self, task):
-        if task == "rfs_2":
-            T = 2
-        elif task == "rfs_5":
-            T = 5
-        else:
-            raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
+        match task:
+            case "rfs_2":
+                T = 2
+            case "rfs_5":
+                T = 5
+            case _:
+                raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
         
-        self.pos_idx = self.Y[self.Y["rfs_T"] >= T*365].index
-        self.neg_idx = self.Y[(self.Y["rfs_T"] < T*365) & (self.Y["rfs_delta"] == 1)].index
+        self.positives = [s for s in self.data.samples if not(s.rfs is None) and not(s.rfs["T"] is None) and s.rfs["T"] >= T*365]
+        self.negatives = [s for s in self.data.samples if not(s.rfs is None) and not(s.rfs["T"] is None) and s.rfs["T"] < T*365 and s.rfs["delta"] == 1]
 
-        if len(self.pos_idx) == 0 or len(self.neg_idx) == 0:
+        if len(self.positives) == 0 or len(self.negatives) == 0:
             raise ValueError(f"No positive or negative sample for Cox pre-training with {task} task. Consider changing task or strategy.")
 
     def get_random_batch(self, batch_size):
-        def dataframe_to_tensor(x):
-            x_ = {}
-            for m in x.columns.get_level_values("modality").unique():
-                if m == "image":
-                    x_.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
-                else:
-                    x_.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
-            return x_
-        
-        # select random positive and negative samples for batch
-        n = min(len(self.pos_idx), len(self.neg_idx), batch_size)
-        pos_idx = np.random.choice(self.pos_idx, size=n, replace=False)
-        neg_idx = np.random.choice(self.neg_idx, size=n, replace=False)
-
-        # transform data to tensor format
-        pos = dataframe_to_tensor(self.X.loc[pos_idx])
-        neg = dataframe_to_tensor(self.X.loc[neg_idx])
+        # take random samples and stack samples in batch
+        n = min(len(self.positives), len(self.negatives), batch_size)
+        pos = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=random.sample(self.positives, n)).stack_to_batch()
+        neg = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=random.sample(self.negatives, n)).stack_to_batch()
         return pos, neg
 
 
 class ProtoNetLoader:
-    def __init__(self, X, Y):
-        """
-        :param X: (pandas.DataFrame) features
-        :param Y: (pandas.DataFrame) rfs data
-        """
-        self.X = X
-        self.Y = Y
-
-    def prepare_data(self, task):        
-        if task == "rfs_2":
-            T = 2
-        elif task == "rfs_5":
-            T = 5
-        else:
-            raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
+    def __init__(self, data):
+        self.data = data
+    
+    def prepare_data(self, task):
+        match task:
+            case "rfs_2":
+                T = 2
+            case "rfs_5":
+                T = 5
+            case _:
+                raise ValueError(f"task {task} not valid. Valid ones are [rfs_2, rfs_5]")
         
-        self.pos_idx = self.Y[self.Y["rfs_T"] >= T*365].index
-        self.neg_idx = self.Y[(self.Y["rfs_T"] < T*365) & (self.Y["rfs_delta"] == 1)].index
+        self.positives = [s for s in self.data.samples if not(s.rfs is None) and not(s.rfs["T"] is None) and s.rfs["T"] >= T*365]
+        self.negatives = [s for s in self.data.samples if not(s.rfs is None) and not(s.rfs["T"] is None) and s.rfs["T"] < T*365 and s.rfs["delta"] == 1]
 
-        if len(self.pos_idx) == 0 or len(self.neg_idx) == 0:
+        if len(self.positives) == 0 or len(self.negatives) == 0:
             raise ValueError(f"No positive or negative sample for Cox pre-training with {task} task. Consider changing task.")
         
     def get_random_batch(self, batch_size):
-        def dataframe_to_tensor(x):
-            x_ = {}
-            for m in x.columns.get_level_values("modality").unique():
-                if m == "image":
-                    x_.update({m: {k: torch.tensor(x[(m, k)].values, dtype=torch.float32) for k in x.columns.get_level_values("features")[x.columns.get_level_values("modality") == m].unique()}})
-                else:
-                    x_.update({m: torch.tensor(x[(m)].values, dtype=torch.float32)})
-            return x_
-
-        # randomly shuffle data
-        self.pos_idx = np.random.permutation(self.pos_idx)
-        self.neg_idx = np.random.permutation(self.neg_idx)
+        def average_dict(d):
+            if isinstance(d, dict):
+                return {k: average_dict(v) for k, v in d.items()}
+            else:
+                return torch.mean(d, dim=0, keepdim=True)
         
-        n = batch_size // 2
+        n = min(len(self.positives), len(self.negatives), batch_size) // 2
+        
+        # randomly shuffle data
+        random.shuffle(self.positives)
+        random.shuffle(self.negatives)
 
         # queries
-        pos_queries = dataframe_to_tensor(self.X.loc[self.pos_idx[:n]])
-        neg_queries = dataframe_to_tensor(self.X.loc[self.neg_idx[:n]])
+        pos_queries = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=self.positives[:n]).stack_to_batch()
+        neg_queries = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=self.negatives[:n]).stack_to_batch()
 
         # prototypes
-        pos_proto = dataframe_to_tensor(self.X.loc[self.pos_idx[n:]].mean(axis=0).to_frame().T)
-        neg_proto = dataframe_to_tensor(self.X.loc[self.neg_idx[n:]].mean(axis=0).to_frame().T)
+        pos_proto = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=self.positives[n:batch_size]).stack_to_batch()
+        pos_proto = average_dict(pos_proto)
+        neg_proto = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=self.negatives[n:batch_size]).stack_to_batch()
+        neg_proto = average_dict(neg_proto)
 
         return (pos_queries, pos_proto), (neg_queries, neg_proto)
