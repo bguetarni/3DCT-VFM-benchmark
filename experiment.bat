@@ -5,8 +5,8 @@ call activate radiomics
 :: set global arguments
 set CODE=087
 set OUTPUT=C:/Users/bilel.guetarni/Desktop/workspace/SEQ-RT/experiments/%CODE%
-set BOOTSTRAP=1
-set EPOCHS=100
+set BOOTSTRAP=10
+set EPOCHS=200
 set BISZE=16
 set LR=5e-5
 
@@ -37,7 +37,7 @@ start cmd /k "python experiments.py --pretraining cox+protonet --task %TASK% --o
 start cmd /k "python experiments.py --pretraining cox+protonet --task %TASK% --output %OUTPUT% --internal %INTERNAL% --external %EXTERNAL% --epoch %EPOCHS% --bootstrap %BOOTSTRAP% --modality both --extractors ct-clip --clinical %CLINICAL% --backbone attention --normalizer scale --lr %LR% --bsize %BISZE% --undersampling --gpu 2"
 start cmd /k "python experiments.py --pretraining cox+protonet --task %TASK% --output %OUTPUT% --internal %INTERNAL% --external %EXTERNAL% --epoch %EPOCHS% --bootstrap %BOOTSTRAP% --modality both --extractors ct-clip --clinical %CLINICAL% --backbone gated --normalizer scale --lr %LR% --bsize %BISZE% --undersampling --gpu 2"
 
-timeout /t 2400 > NUL
+timeout /t 7200 > NUL
 
 set TASK=rfs_5
 
