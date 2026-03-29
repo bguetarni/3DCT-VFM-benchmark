@@ -144,12 +144,16 @@ class FineTuneTrainer(BaseTrainer):
 
             # train/val
             for split, loader in [("train", training_loader), ("valid", validation_loader)]:
+                if len(loader) == 0:
+                    continue
                 split_metrics, _ = self.evaluate(model, loader, self.bsize, device)
                 for m, v in split_metrics.items():
                     metrics.append({"split": split, "metric": m, "value": v, "step": epoch})
 
             # external test
             for loader in external_loader:
+                if len(loader) == 0:
+                    continue
                 split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loader, self.bsize, device)
                 for m, v in split_metrics.items():
                     metrics.append({"split": "test", "dataset": loader.data.cohort, "metric": m, "value": v, "step": epoch})

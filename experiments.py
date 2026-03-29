@@ -30,7 +30,7 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
     """
 
     # split internal dataset into training and validation
-    training_loader, validation_loader = internal_loader.split()
+    training_loader, validation_loader = internal_loader.split_loader()
 
     # construct dict of number of dimensions for each modality and features
     dims = training_loader.get_features_dimension()
@@ -39,11 +39,12 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
     # apply normalization function to image features
     print("normalizing features values..")
     if not(dims["image"] is None):
-        norm = training_loader.normalize_image_features(normalizer=exp_params["normalizer"])
-        validation_loader.normalize_image_features(norm)
+        normalizer = training_loader.normalize_image_features(normalizer=exp_params["normalizer"])
+        validation_loader.normalize_image_features(normalizer)
         for external in external_loader:
-            external.normalize_image_features(norm)
-        normalizer.update({b: norm})
+            external.normalize_image_features(normalizer)
+    else:
+        normalizer = None
     
     if not(dims["clinical"] is None):
         # normalize clinical features
@@ -55,10 +56,10 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
         # get max value for each clinical feature across datasets to know how many dimensions 
         # to use for one-hot encoding categorical features
         max_clinical_values = training_loader.get_max_clinical_values()
-        for k, v in validation_loader.get_max_clinical_values():
+        for k, v in validation_loader.get_max_clinical_values().items():
             max_clinical_values[k] = max(max_clinical_values[k], v)
         for external in external_loader:
-            for k, v in external.get_max_clinical_values():
+            for k, v in external.get_max_clinical_values().items():
                 max_clinical_values[k] = max(max_clinical_values[k], v)
         # one-hot encode categorical clinical features using max values calculated above
         training_loader.one_hot_encode_clinical_features(max_clinical_values)
@@ -74,7 +75,6 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
 
     metrics = []
     best_state_dict = {}
-    normalizer = {}
     test_pred_proba = {}
     for b in range(exp_params["bootstrap"]):
         print(f"run {b+1}/{exp_params['bootstrap']}")
@@ -102,7 +102,7 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
             case "concat":
                 backbone = Concat(**exp_params)
             case "ffn":
-                if len(dims["image"]) > 0:
+                if dims["image"] and len(dims["image"]) > 0:
                     in_dim = sum(dims["image"].values())
                 else:
                     in_dim = dims["clinical"]
@@ -146,13 +146,9 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
         model = Classifier(backbone, freeze=freeze_)
 
         # train model
-        try:
-            optimizer_params = {"name": exp_params["optimizer"], "lr": exp_params["lr"]}
-            trainer = FineTuneTrainer(exp_params["epoch"], exp_params["bsize"], optimizer_params, bool(exp_params["lr_scheduler"]), exp_params["class_weights"])
-            fold_metrics, fold_best_state_dict, fold_test_pred_proba = trainer.train(model, device, bootstrap_training_loader, validation_loader, external_loader)
-        except RuntimeError:
-            print("RuntimeError during training, skipping run")
-            continue
+        optimizer_params = {"name": exp_params["optimizer"], "lr": exp_params["lr"]}
+        trainer = FineTuneTrainer(exp_params["epoch"], exp_params["bsize"], optimizer_params, bool(exp_params["lr_scheduler"]), exp_params["class_weights"])
+        fold_metrics, fold_best_state_dict, fold_test_pred_proba = trainer.train(model, device, bootstrap_training_loader, validation_loader, external_loader)
 
         # update metrics and checkpoint
         best_state_dict.update({b: fold_best_state_dict})

@@ -81,16 +81,30 @@ class BaseLoader(ABC):
         return data
 
     def load_imaging_features(self, dir_path):
+
+        ########################### CSV version ######################
+        # features = {}
+        # for file_ in dir_path.iterdir():
+        #     fts = pandas.read_csv(file_)
+        #     for p in fts["patient"].unique()[:50]:
+        #         p = str(p)   # make sure patient ID is string for consistency
+        #         if not (p in features.keys()):
+        #             features.update({p: {}})
+        #         fts_p = fts[fts["patient"] == p]
+        #         values = fts_p[["name", "value"]].sort_values(by="name", axis=0, ascending=True)["value"].values
+        #         features[p].update({file_.stem: values})
+        ##############################################################
+
         features = {}
         for file_ in dir_path.iterdir():
-            fts = pandas.read_csv(file_)
-            for p in fts["patient"].unique():
+            with open(file_, "rb") as f:
+                fts = pickle.load(f)
+            for p in list(fts.keys()):
+                fts_p = fts[p]
                 p = str(p)   # make sure patient ID is string for consistency
                 if not (p in features.keys()):
                     features.update({p: {}})
-                fts_p = fts[fts["patient"] == p]
-                values = fts_p[["name", "value"]].sort_values(by="name", axis=0, ascending=True)["value"].values
-                features[p].update({file_.stem: values})
+                features[p].update({file_.stem: fts_p})
         return features
 
 class ARTIX(BaseLoader):
@@ -111,7 +125,6 @@ class ARTIX(BaseLoader):
             "SEX": "sex",
             "ST_HPV": "hpv",
             "LOC": "localisation",
-            "CHIMIO_TYP": "treatment",
             # "ECOG": "ecog",
             # "STAG": "stage",
             # "FUM": "smoking",
@@ -122,6 +135,7 @@ class ARTIX(BaseLoader):
         self.clinical_encoding = {
             "surgery": {"NO": 0},
             "treatment": {"CH+RT": 1},
+            "sex": {"Male": 1, "Female": 0},
         }
 
     def build_patients(self, log=None):
@@ -295,6 +309,13 @@ class ARTIX(BaseLoader):
                     if not(id_ in clinical.keys()):
                         clinical.update({id_: {}})
                     clinical[id_].update({k: v})
+            
+            # add default values for clinical features
+            for k, v in self.clinical_default_values.items():
+                if k in self.clinical_encoding.keys():
+                    clinical[id_][k] = self.clinical_encoding[k][v]
+                else:
+                    clinical[id_][k] = self.clinical_default_values[k]
             
             # add center as clinical feature
             clinical[id_].update({"center": "CEM"}) # Centre Eugene Marquis
@@ -480,6 +501,13 @@ class HECKTOR(BaseLoader):
                     if not(id_ in clinical.keys()):
                         clinical.update({id_: {}})
                     clinical[id_].update({k: v})
+
+            # add default values for clinical features
+            for k, v in self.clinical_default_values.items():
+                if k in self.clinical_encoding.keys():
+                    clinical[id_][k] = self.clinical_encoding[k][v]
+                else:
+                    clinical[id_][k] = self.clinical_default_values[k]
             
             center = p.clinical["CenterID"]
             center = self.center_map[center] if center in self.center_map.keys() else center
@@ -1011,6 +1039,8 @@ class RADCURE(TCIA):
         }
 
         self.clinical_encoding = {
+            "surgery": {"NO": 0},
+
             "sex": {"Female": 0, "Male": 1},
             
             "ecog": {"ECOG 0": 0, "ECOG 2": 1, "ECOG 1": 0, "ECOG 4": 3, "ECOG 3": 2, "ECOG-Pt 2": 1, 
@@ -1097,6 +1127,7 @@ class RADCURE(TCIA):
             rfs.update({id_: {"T": rfs_T, "delta": rfs_delta}})
             
             # build clinical features
+            clinical.update({id_: {}})
             for k, v in p.clinical.items():
                 if k in self.clinical_key_mapping.keys():
                     k = self.clinical_key_mapping[k]
@@ -1110,10 +1141,20 @@ class RADCURE(TCIA):
                             v = float(v)
                         except ValueError:
                             v = None
-
-                    if not(id_ in clinical.keys()):
-                        clinical.update({id_: {}})
+                    
                     clinical[id_].update({k: v})
+                else:
+                    # exception for RADCURE
+                    # must include RADCURE challenge split information
+                    # do not change or make sure field 'RADCURE-challenge' is included
+                    clinical[id_].update({k: v})
+
+            # add default values for clinical features
+            for k, v in self.clinical_default_values.items():
+                if k in self.clinical_encoding.keys():
+                    clinical[id_][k] = self.clinical_encoding[k][v]
+                else:
+                    clinical[id_][k] = self.clinical_default_values[k]
         
         return imaging, clinical, rfs
 

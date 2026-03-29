@@ -62,21 +62,23 @@ class Data:
         self.cohort = cohort
         self.samples = samples
 
-    def len(self):
+    def __len__(self):
         return len(self.samples) if self.samples else 0
 
     def load(self, split=None):
         try:
             loader = cohorts_map[self.cohort]
         except KeyError:
-            raise ValueError(f"dataset name {self.cohort} not recognized. See args.dataset argument choices.")
-            
+            raise ValueError(f"dataset name {self.cohort} not recognized. See args.dataset argument choices.")        
+        
         imaging, clinical, rfs = loader(None).get_features_labels(self.base_path)
+
         patients_id = set([*imaging.keys(), *clinical.keys(), *rfs.keys()])
         self.samples = []
         for p in patients_id:
             # check for RADCURE patients split
-            if self.cohort == "radcure" and split == "training" and clinical[p]["RADCURE-challenge"] == "test":
+            if self.cohort == "radcure" and ((split == "training" and clinical[p]["RADCURE-challenge"] == "test") or \
+                                             (split == "test" and str(clinical[p]["RADCURE-challenge"]) in ("training", "0"))):
                     # skip patient if in RADCURE test split while loading training split
                     continue
 
@@ -163,27 +165,27 @@ class Data:
     def filter_patients(self, exp_params):
         # filter patients with missing data for selected modality or label
         # preserve patients with missing label but available RFS time for Cox model pre-training
-        invalid_samples = []
-        cox_samples = []
+        invalid_samples_id = []
+        cox_samples_id = []
         for s in self.samples:
             if (exp_params["modality"] == "image" and not(self.check_imaging(s, exp_params))) or \
                     (exp_params["modality"] == "clinical" and not(self.check_clinical(s, exp_params))) or \
                         (exp_params["modality"] == "both" and (not(self.check_imaging(s, exp_params)) or not(self.check_clinical(s, exp_params)))):
                 # missing data
-                invalid_samples.append(s.id_)
+                invalid_samples_id.append(s.id_)
             elif s.label is None:
                 if not(s.rfs is None) and not(s.rfs["T"] is None):
-                    cox_samples.append(s.id_)
+                    cox_samples_id.append(s.id_)
                 else:
-                    invalid_samples.append(s.id_)
+                    invalid_samples_id.append(s.id_)
             else:
                 pass
 
         # select samples for Cox pre-training
-        cox_samples = [s for s in self.samples if s.id_ in cox_samples]
+        cox_samples = [s for s in self.samples if s.id_ in cox_samples_id]
 
         # remove invalid and cox samples from dataset
-        self.samples = [s for s in self.samples if not(s.id_ in invalid_samples or s.id_ in cox_samples)]
+        self.samples = [s for s in self.samples if not(s.id_ in invalid_samples_id or s.id_ in cox_samples_id)]
 
         return cox_samples
 
@@ -191,17 +193,21 @@ class Data:
         return self.samples[0].get_features_dimension()
     
     def normalize_image_features(self, normalizer=None):
-        if isinstance(normalizer, (StandardScaler, MinMaxScaler, Normalizer)):
-            for sample in self.samples:
-                sample.imaging = {k: normalizer.transform(v) for k,v in sample.imaging.items()}
-        else:        
-            # fit normalizer
-            training_data = {k: np.stack([s.imaging[k] for s in self.samples], axis=0) for k in self.samples[0].keys()}
-            normalizer = {k: get_normalizer(str(normalizer)).fit(training_data[k]) for k in training_data.keys()}
-
-            # transform all data with fitted normalizer
-            for sample in self.samples:
-                sample.imaging = {k: normalizer[k].transform(sample.imaging[k]) for k in sample.imaging.keys()}
+        if isinstance(normalizer, dict):
+            for k, norm in normalizer.items():
+                x = np.stack([s.imaging[k] for s in self.samples], axis=0)
+                x = norm.transform(x)
+                for i, sample in enumerate(self.samples):
+                    sample.imaging[k] = x[i]
+        else:
+            normalizer = {}
+            for k in self.samples[0].imaging.keys():
+                norm = get_normalizer(str(normalizer))
+                x = np.stack([s.imaging[k] for s in self.samples], axis=0)
+                x = norm.fit_transform(x)
+                normalizer[k] = norm
+                for i, sample in enumerate(self.samples):
+                    sample.imaging[k] = x[i]
             
             return normalizer
         
@@ -240,7 +246,7 @@ class Data:
                 sample.imaging = {k: torch.tensor(v, dtype=torch.float32) for k, v in sample.imaging.items()}
             if not(sample.clinical is None):
                 # concatenate clinical features by ordered key to ensure same order across samples and cohorts !!
-                sample.clinical = torch.tensor(list(collapse([sample.clinical[k] for k in sorted(sample.clinical.keys())], dtype=torch.float32)))
+                sample.clinical = torch.tensor(list(collapse([sample.clinical[k] for k in sorted(sample.clinical.keys())])), dtype=torch.float32)
         
     def undersampling(self):
         labels = [s.label for s in self.samples]
@@ -248,7 +254,8 @@ class Data:
         n = min(label_counts.values())
         candidates = {i: [s for s in self.samples if s.label == i] for i in label_counts.keys()}
         selected_samples = {i: random.sample(candidates[i], n) for i in candidates.keys()}
-        self.samples = list(chain.from_iterable(selected_samples.values()))
+        samples = list(chain.from_iterable(selected_samples.values()))
+        return Data(base_path=self.base_path, cohort=self.cohort, samples=samples)
 
     def stack_to_batch(self):
         """
@@ -285,6 +292,9 @@ class DataLoader:
         self.split = split
         self.class_weights = class_weights
 
+    def __len__(self):
+        return len(self.data)
+
     def load(self):
         self.data.load(self.split)
 
@@ -303,6 +313,9 @@ class DataLoader:
         self.data.apply_inclusion_criteria()
 
         # one-hot encode and categorical and filter clinical variables
+        # if RADCURE dataset, keep track of patients split for later use in split_loader()
+        if self.data.cohort == "radcure":
+            self.radcure_challenge = {s.id_: s.clinical["RADCURE-challenge"] for s in self.data.samples}
         self.data.filter_clinical_features(exp_params["clinical"])
 
         # select imaging features defined in exp_params  
@@ -336,14 +349,14 @@ class DataLoader:
         cw = (cw - cw.mean()) + 1   # center values around 1
         return cw
     
-    def split(self):
+    def split_loader(self):
         """
         Split data into training and validation according to RADCURE challenge definition
         """
         training = []
         validation = []
         for sample in self.data.samples:
-            if sample.clinical["RADCURE-challenge"] == "training":
+            if self.radcure_challenge[sample.id_] == "training":
                 training.append(sample)
             else:
                 validation.append(sample)
@@ -369,7 +382,7 @@ class DataLoader:
         self.data.convert_to_tensor()
     
     def undersampling(self):
-        self.data.undersampling()
+        return DataLoader(data=self.data.undersampling(), split=self.split, class_weights=self.class_weights)
     
     def get_labels(self):
         return [s.label for s in self.data.samples]
@@ -385,7 +398,7 @@ class DataLoader:
             if skip_singleton_batch and len(batch) < 2:
                 return StopIteration   # stop if batch size is 1 (BatchNorm error)
             
-            x = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=batch).stack_to_batch()
+            x = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=batch).stack_to_batch()
             y = torch.tensor([s.label for s in batch])
 
             if sample_weight:
@@ -419,8 +432,8 @@ class CoxProtoNetLoader:
     def get_random_batch(self, batch_size):
         # take random samples and stack samples in batch
         n = min(len(self.positives), len(self.negatives), batch_size)
-        pos = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=random.sample(self.positives, n)).stack_to_batch()
-        neg = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=random.sample(self.negatives, n)).stack_to_batch()
+        pos = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=random.sample(self.positives, n)).stack_to_batch()
+        neg = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=random.sample(self.negatives, n)).stack_to_batch()
         return pos, neg
 
 
@@ -457,13 +470,13 @@ class ProtoNetLoader:
         random.shuffle(self.negatives)
 
         # queries
-        pos_queries = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=self.positives[:n]).stack_to_batch()
-        neg_queries = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=self.negatives[:n]).stack_to_batch()
+        pos_queries = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.positives[:n]).stack_to_batch()
+        neg_queries = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.negatives[:n]).stack_to_batch()
 
         # prototypes
-        pos_proto = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=self.positives[n:batch_size]).stack_to_batch()
+        pos_proto = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.positives[n:batch_size]).stack_to_batch()
         pos_proto = average_dict(pos_proto)
-        neg_proto = Data(base_path=self.data.base_path, cohort=self.data.cohort, data=self.negatives[n:batch_size]).stack_to_batch()
+        neg_proto = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.negatives[n:batch_size]).stack_to_batch()
         neg_proto = average_dict(neg_proto)
 
         return (pos_queries, pos_proto), (neg_queries, neg_proto)
