@@ -20,7 +20,7 @@ if __name__ == "__main__":
         exit()
     
     df = []
-    for run in tqdm.tqdm(list(base_path.iterdir())[:8], ncols=100):
+    for run in tqdm.tqdm(list(base_path.iterdir()), ncols=100):
         if not(run.joinpath("metrics.csv").exists()) or not(run.joinpath("params.json").exists()):
             continue
         
