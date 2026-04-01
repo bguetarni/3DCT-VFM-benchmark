@@ -32,13 +32,9 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
     # split internal dataset into training and validation
     training_loader, validation_loader = internal_loader.split_loader()
 
-    # construct dict of number of dimensions for each modality and features
-    dims = training_loader.get_features_dimension()
-    exp_params.update({"dims": dims})
-
     # apply normalization function to image features
     print("normalizing features values..")
-    if not(dims["image"] is None):
+    if exp_params["modality"] in ["both", "image"]:
         normalizer = training_loader.normalize_image_features(normalizer=exp_params["normalizer"])
         validation_loader.normalize_image_features(normalizer)
         for external in external_loader:
@@ -46,7 +42,7 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
     else:
         normalizer = None
     
-    if not(dims["clinical"] is None):
+    if exp_params["modality"] in ["both", "clinical"]:
         # normalize clinical features
         training_loader.normalize_clinical_features()
         validation_loader.normalize_clinical_features()
@@ -65,7 +61,11 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
         training_loader.one_hot_encode_clinical_features(max_clinical_values)
         validation_loader.one_hot_encode_clinical_features(max_clinical_values)
         for external in external_loader:
-            external.one_hot_encode_clinical_features(max_clinical_values)    
+            external.one_hot_encode_clinical_features(max_clinical_values)
+
+    # construct dict of number of dimensions for each modality and features
+    dims = training_loader.get_features_dimension()
+    exp_params.update({"dims": dims})
 
     # convert features to tensor
     training_loader.convert_to_tensor()
@@ -148,7 +148,7 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
         # train model
         optimizer_params = {"name": exp_params["optimizer"], "lr": exp_params["lr"]}
         trainer = FineTuneTrainer(exp_params["epoch"], exp_params["bsize"], optimizer_params, bool(exp_params["lr_scheduler"]), exp_params["class_weights"])
-        fold_metrics, fold_best_state_dict, fold_test_pred_proba = trainer.train(model, device, bootstrap_training_loader, validation_loader, external_loader)
+        fold_metrics, fold_best_state_dict, fold_test_pred_proba = trainer.train(model, device, bootstrap_training_loader, validation_loader, external_loader, **exp_params)
 
         # update metrics and checkpoint
         best_state_dict.update({b: fold_best_state_dict})
@@ -215,6 +215,7 @@ if __name__ == "__main__":
     parser.add_argument('--output', type=str, required=True, help='path to save model files')
     parser.add_argument('--internal', type=str, default="radcure", help='name of internal dataset to use for pre-training and training')
     parser.add_argument('--external', type=str, default="artix,headneckpetct,hecktor,radcure", help="comma-separated list of external datasets to use for external validation")
+    parser.add_argument('--split_loc', action='store_true', help="wether to split RADCURE test into different localisations for evaluation")
     parser.add_argument('--bootstrap', type=int, default=1, help='number of bootstrap iterations')
     parser.add_argument('--task', type=str, required=True, choices=["rfs_2", "rfs_5"], help="task to train model on")
     parser.add_argument('--pretraining', default=None, choices=["cox+protonet", "protonet"], help="which method to use for pre-training")

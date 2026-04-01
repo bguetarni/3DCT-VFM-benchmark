@@ -675,17 +675,15 @@ class HeadNeckPETCT(TCIA):
             "Sex": "sex",
             "HPV status": "hpv",
             "Primary Site": "localisation",
-            "Therapy": "treatment",
-            "dose": "dose",
-            "M-stage": "metastasis",
             "Surgery": "surgery",
-            # "TNM group stage": "stage",
+            "M-stage": "metastasis",
+            "Therapy": "treatment",
+            "TNM group stage": "stage",
+            "dose": "dose",
         }
 
         self.clinical_encoding = {
             "sex": {"M": 1, "F": 0, "m": 1},
-
-            "localisation": {"Oropharynx": 0},
 
             "metastasis": {"M0": 0},
 
@@ -700,6 +698,14 @@ class HeadNeckPETCT(TCIA):
             "treatment": {"chemo radiation": 1, "radiation": 0},
 
             "surgery": {"NO": 0, "YES": 1},
+
+            "localisation": {
+                # oropharynx
+                "Oropharynx": 0,
+                # Pharynx & Larynx
+                "Larynx": 1, "Nasopharynx": 1, "Hypopharynx": 1,
+                # others
+                "unknown": 2, "nan": 2}
         }
 
     def get_patient_clinical_data(self, patient_id):
@@ -1028,14 +1034,14 @@ class RADCURE(TCIA):
         self.clinical_key_mapping = {
             "Age": "age",
             "Sex": "sex",
+            "Smoking Status": "smoking",
             "HPV": "hpv",
+            "ECOG PS": "ecog",
             "Ds Site": "localisation",
             "Tx Modality": "treatment",
-            "Dose": "dose",
             "METASTASIS": "metastasis",
-            # "ECOG PS": "ecog",
-            # "Stage": "stage",
-            # "Smoking Status": "smoking",
+            "Stage": "stage",
+            "Dose": "dose",
         }
 
         self.clinical_encoding = {
@@ -1055,10 +1061,20 @@ class RADCURE(TCIA):
             
             "treatment": {"RT alone": 0, "ChemoRT": 1, "ChemoRT ": 1, "Postop RT alone": 0},
 
-            "localisation": {"Oropharynx": 0},
-
             "metastasis": {"M0": 0, "MX": None, "M1": 1},
+
+            "localisation": {
+                # oropharynx
+                "Oropharynx": 0,
+                # Pharynx & Larynx
+                "Larynx": 1, "Hypopharynx": 1, "Nasopharynx": 1,
+                # others
+                "Unknown": 2, "Lip & Oral Cavity": 2, "nasal cavity": 2, "Skin": 2, "Paranasal Sinus": 2, "Sarcoma": 2, 
+                "esophagus": 2, "Paraganglioma": 2, "Esophagus": 2, "Nasal Cavity": 2, "benign tumor": 2, "Salivary Glands": 2, 
+                "Other": 2, "Orbit": 2, "Lacrimal gland": 2},
         }
+
+        self.localisation_mapping = {0: "Oropharynx", 1: "Pharynx & Larynx", 2: "Others"}
 
     def get_patient_clinical_data(self, patient_id):
         clinical = pandas.read_excel(os.path.join(self.path, "RADCURE_Clinical_v04_20241219 (1).xlsx"))

@@ -78,7 +78,7 @@ class FineTuneTrainer(BaseTrainer):
         self.lr_scheduler = lr_scheduler
         self.class_weights = class_weights
 
-    def train(self, model, device, training_loader, validation_loader=None, external_loader=None):
+    def train(self, model, device, training_loader, validation_loader=None, external_loader=None, **kwargs):
         """
         Docstring for train
         
@@ -154,10 +154,17 @@ class FineTuneTrainer(BaseTrainer):
             for loader in external_loader:
                 if len(loader) == 0:
                     continue
-                split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loader, self.bsize, device)
-                for m, v in split_metrics.items():
-                    metrics.append({"split": "test", "dataset": loader.data.cohort, "metric": m, "value": v, "step": epoch})
-                    test_pred_proba.append({"step": epoch, "y_true": y_true, "y_pred_proba": y_pred_proba})
+                if loader.data.cohort == "radcure" and "split_loc" in kwargs.keys() and kwargs["split_loc"]:
+                    for loc_loader in [loader, *loader.split_loc()]:
+                        split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loc_loader, self.bsize, device)
+                        for m, v in split_metrics.items():
+                            metrics.append({"split": "test", "dataset": loc_loader.data.cohort, "metric": m, "value": v, "step": epoch})
+                            test_pred_proba.append({"dataset": loc_loader.data.cohort, "step": epoch, "y_true": y_true, "y_pred_proba": y_pred_proba})
+                else:
+                    split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loader, self.bsize, device)
+                    for m, v in split_metrics.items():
+                        metrics.append({"split": "test", "dataset": loader.data.cohort, "metric": m, "value": v, "step": epoch})
+                        test_pred_proba.append({"dataset": loader.data.cohort, "step": epoch, "y_true": y_true, "y_pred_proba": y_pred_proba})
             
             # save checkpoint if current validation balanced accuracy is best
             validation_metric = pandas.DataFrame(metrics)
