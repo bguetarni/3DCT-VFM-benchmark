@@ -102,11 +102,11 @@ class Data:
                 label = None
             elif sample.rfs["T"] < T*365:
                 if sample.rfs["delta"] == 1:
-                    label = 0
+                    label = 1
                 else:
                     label = None
             else:
-                label = 1
+                label = 0
             
             # update sample label
             sample.label = label
@@ -412,6 +412,10 @@ class DataLoader:
         self.data.one_hot_encode_clinical_features(max_clinical_values)
 
     def batch_iterator(self, batch_size, sample_weight=False, skip_singleton_batch=True):
+        # shuffle samples before batching
+        random.shuffle(self.data.samples)
+
+        # batch iteration
         for batch in chunked(self.data.samples, batch_size):
             if skip_singleton_batch and len(batch) < 2:
                 return StopIteration   # stop if batch size is 1 (BatchNorm error)
