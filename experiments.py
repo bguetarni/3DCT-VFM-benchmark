@@ -7,6 +7,8 @@ import os
 import pandas
 import torch
 import coolname
+import warnings
+from sklearn.exceptions import UndefinedMetricWarning
 
 from classifiers import Attention, Concat, GatedModality, FFN, Classifier
 from dataloader import Data, DataLoader, CoxProtoNetLoader, ProtoNetLoader
@@ -245,6 +247,9 @@ if __name__ == "__main__":
     print("Script arguments:")
     for k, v in vars(args).items():
         print(f"    {k}: {v}")
+
+    # disable sklearn UndefinedMetricWarning for AUC and ROC calculation
+    warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
     
     main(args)
 
