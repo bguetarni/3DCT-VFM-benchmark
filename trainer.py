@@ -1,3 +1,4 @@
+import warnings
 import tqdm
 import torch
 import torch.nn.functional as F
@@ -268,6 +269,26 @@ class ProtoNetTrainer:
         self.bsize = bsize
         self.optimizer_params = optimizer_params
         self.epsilon = epsilon
+
+    def get_dict_tensor_shape(self, t):
+        if isinstance(t, torch.Tensor):
+            return t.shape
+        elif isinstance(t, dict):
+            return self.get_dict_tensor_shape(list(t.values())[0])
+        else:
+            return torch.tensor(t).shape
+        
+    def cat_dict_tensor(self, tensors, dim=0):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")   # temporary disable warnings due to tensor copy
+            output = {}
+            for k in tensors[0].keys():
+                tensors_k = [t[k] for t in tensors]
+                if isinstance(tensors_k[0], dict):
+                    output[k] = self.cat_dict_tensor(tensors_k, dim)
+                else:
+                    output[k] = torch.cat(list(map(torch.tensor, tensors_k)), dim=dim)
+            return output
     
     def train(self, model, device, train_loader):
         """
@@ -307,17 +328,20 @@ class ProtoNetTrainer:
             if batch is StopIteration:
                     break
             
-            (pos_queries, pos_proto), (neg_queries, neg_proto) = batch
-            
-            # computes queries feature
-            pos_queries = model(send_to_device(pos_queries, device))
-            neg_queries = model(send_to_device(neg_queries, device))
+            (pos_queries, pos_supp), (neg_queries, neg_supp) = batch
 
-            # computes class prototypes feature
-            proto = {m: {f: torch.cat((pos_proto[m][f], neg_proto[m][f]), dim=0) for f in pos_proto[m].keys()} if m == "image" else torch.cat((pos_proto[m], neg_proto[m]), dim=0) for m in pos_proto.keys()}
-            proto = model(send_to_device(proto, device))
-            pos_proto = proto[:1]
-            neg_proto = proto[1:]
+            # compute indices for splitting big tensor
+            shape_ = self.get_dict_tensor_shape(pos_queries)[0], self.get_dict_tensor_shape(pos_supp)[0], self.get_dict_tensor_shape(neg_queries)[0]
+            indices = [shape_[0],  shape_[0] + shape_[1], shape_[0] + shape_[1] + shape_[2]]
+            
+            # concatenate tensors, apply model and split into original tensors
+            x = self.cat_dict_tensor((pos_queries, pos_supp, neg_queries, neg_supp), dim=0)
+            x = model(send_to_device(x, device))
+            pos_queries, pos_supp, neg_queries, neg_supp = torch.tensor_split(x, indices, dim=0)
+
+            # stop gradient for supports and compute class prototype
+            pos_proto = pos_supp.detach().mean(dim=0, keepdim=True)
+            neg_proto = neg_supp.detach().mean(dim=0, keepdim=True)
 
             # compute total loss
             N = pos_queries.shape[0] + neg_queries.shape[0]

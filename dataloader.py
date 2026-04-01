@@ -483,13 +483,7 @@ class ProtoNetLoader:
         if len(self.positives) == 0 or len(self.negatives) == 0:
             raise ValueError(f"No positive or negative sample for Cox pre-training with {task} task. Consider changing task.")
         
-    def get_random_batch(self, batch_size):
-        def average_dict(d):
-            if isinstance(d, dict):
-                return {k: average_dict(v) for k, v in d.items()}
-            else:
-                return torch.mean(d, dim=0, keepdim=True)
-        
+    def get_random_batch(self, batch_size):        
         n = min(len(self.positives), len(self.negatives), batch_size) // 2
         
         # randomly shuffle data
@@ -501,9 +495,7 @@ class ProtoNetLoader:
         neg_queries = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.negatives[:n]).stack_to_batch()
 
         # prototypes
-        pos_proto = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.positives[n:batch_size]).stack_to_batch()
-        pos_proto = average_dict(pos_proto)
-        neg_proto = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.negatives[n:batch_size]).stack_to_batch()
-        neg_proto = average_dict(neg_proto)
+        pos_supp = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.positives[n:batch_size]).stack_to_batch()
+        neg_supp = Data(base_path=self.data.base_path, cohort=self.data.cohort, samples=self.negatives[n:batch_size]).stack_to_batch()
 
-        return (pos_queries, pos_proto), (neg_queries, neg_proto)
+        return (pos_queries, pos_supp), (neg_queries, neg_supp)

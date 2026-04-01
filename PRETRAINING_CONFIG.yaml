@@ -5,5 +5,5 @@ optimizer:
   max_lr: 5e-5
   final_lr: 1e-6
   warmup: 50
-batch_size: 16
+batch_size: 128
 n_iter: 3000
