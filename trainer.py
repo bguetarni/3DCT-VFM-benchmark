@@ -48,27 +48,31 @@ class BaseTrainer:
         return self.compute_metrics(y_pred, y_pred_proba, y_true), (y_true.cpu().numpy().tolist(), y_pred_proba.cpu().numpy().tolist())
     
     def compute_metrics(self, y_pred, y_pred_proba, y):
-        cm = confusion_matrix(y, y_pred, labels=[0,1]).ravel()
+        with warnings.catch_warnings():
+            # disable UserWarning due to single label presence
+            warnings.simplefilter("ignore")
 
-        # handle case where only one label in y and y_pred
-        # set all confusion matrix element to zero
-        # keeping only the element relative to class present in y
-        if len(cm) == 1:
-            count = cm[0]
-            cm = np.zeros((2,2), dtype=np.int64)
-            i = int(np.unique(y).item())
-            j = int(np.unique(y_pred).item())
-            cm[i,j] = count
-            cm = cm.ravel()
+            cm = confusion_matrix(y, y_pred, labels=[0,1]).ravel()
 
-        tn, fp, fn, tp = cm
-        m = {"acc": accuracy_score(y, y_pred),
-                "auc": roc_auc_score(y, y_pred_proba),
-                "balanced_accuracy": balanced_accuracy_score(y, y_pred),
-                "f1_score": f1_score(y, y_pred, zero_division=0),
-                "specificity": zero_division(tn, (tn + fp)),
-                "sensitivity": zero_division(tp, (tp + fn)),
-                "log_loss": log_loss(y, y_pred_proba, labels=[0,1])}
+            # handle case where only one label in y and y_pred
+            # set all confusion matrix element to zero
+            # keeping only the element relative to class present in y
+            if len(cm) == 1:
+                count = cm[0]
+                cm = np.zeros((2,2), dtype=np.int64)
+                i = int(np.unique(y).item())
+                j = int(np.unique(y_pred).item())
+                cm[i,j] = count
+                cm = cm.ravel()
+
+            tn, fp, fn, tp = cm
+            m = {"acc": accuracy_score(y, y_pred),
+                    "auc": roc_auc_score(y, y_pred_proba, labels=[0,1]),
+                    "balanced_accuracy": balanced_accuracy_score(y, y_pred),
+                    "f1_score": f1_score(y, y_pred, zero_division=0, labels=[0,1]),
+                    "specificity": zero_division(tn, (tn + fp)),
+                    "sensitivity": zero_division(tp, (tp + fn)),
+                    "log_loss": log_loss(y, y_pred_proba, labels=[0,1])}
         return m
 
 class FineTuneTrainer(BaseTrainer):

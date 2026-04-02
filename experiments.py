@@ -248,9 +248,6 @@ if __name__ == "__main__":
     for k, v in vars(args).items():
         print(f"    {k}: {v}")
 
-    # disable sklearn UndefinedMetricWarning for AUC and ROC calculation
-    warnings.filterwarnings("ignore", category=UndefinedMetricWarning)
-    
     main(args)
 
     print("done.")
