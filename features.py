@@ -2,7 +2,6 @@ import tqdm
 import os
 import argparse
 import pickle
-import pandas
 import torch
 import time
 from difflib import SequenceMatcher
@@ -34,7 +33,7 @@ if __name__ == "__main__":
     dicom2nifti.settings.disable_validate_slice_increment()
 
     # build output path and check if file already exists
-    out_path = os.path.join(args.output, args.cohort, f"{args.type}.csv")
+    out_path = os.path.join(args.output, args.cohort, f"{args.type}.pkl")
     os.makedirs(os.path.split(out_path)[0], exist_ok=True)
     if os.path.exists(out_path) and not(args.overwrite):
         print(f"WARNING: exiting because destination file already exists ({out_path}). To overwrite, set argument --overwrite to True")
@@ -71,7 +70,7 @@ if __name__ == "__main__":
         case _:
             raise ValueError(f"argument --type value not implemented: {args.type}")
 
-    features = []
+    features = {}
     for id_, p in tqdm.tqdm(list(patients.items()), ncols=50):
         try:
             p.sort_imaging()   # sort images to recover first CT scan (i.e., CT0)
@@ -125,21 +124,21 @@ if __name__ == "__main__":
             except ValueError as e:
                 print(f"ValueError occured for patient {id_}: {e}")
                 continue
-
+            
+            features[id_] = {}
             for k, v in featureVector.items():
                 if k.split("_")[0] == "diagnostics":
                     continue
-                features.append({"name": k, "value": v, "features": args.type, "patient": id_})
+                features[id_][k] = v
         else:
             try:
                 output = infer(input_path, bbox, preprocess, model, device)
-                fts = output.flatten()
-                for j, f in enumerate(fts):
-                    features.append({"name": str(j), "value": f, "features": args.type, "patient": id_})
+                features[id_] = output.flatten()
             except (Exception, RuntimeError) as e:
                 print("Error/Exception occured: ", e)
                 continue
 
-    # save to csv
-    pandas.DataFrame(features).to_csv(out_path, index=False)
+    # save to pickle file
+    with open(out_path, "wb") as f:
+        pickle.dump(features, f)
     print("Done.")
