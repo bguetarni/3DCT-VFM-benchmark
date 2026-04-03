@@ -77,7 +77,6 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
 
     metrics = []
     best_state_dict = {}
-    test_pred_proba = {}
     for b in range(exp_params["bootstrap"]):
         print(f"run {b+1}/{exp_params['bootstrap']}")
 
@@ -150,14 +149,13 @@ def bootstrap_training(exp_params, internal_loader, external_loader, device="cpu
         # train model
         optimizer_params = {"name": exp_params["optimizer"], "lr": exp_params["lr"]}
         trainer = FineTuneTrainer(exp_params["epoch"], exp_params["bsize"], optimizer_params, bool(exp_params["lr_scheduler"]), exp_params["class_weights"])
-        fold_metrics, fold_best_state_dict, fold_test_pred_proba = trainer.train(model, device, bootstrap_training_loader, validation_loader, external_loader, **exp_params)
+        fold_metrics, fold_best_state_dict = trainer.train(model, device, bootstrap_training_loader, validation_loader, external_loader, **exp_params)
 
         # update metrics and checkpoint
         best_state_dict.update({b: fold_best_state_dict})
-        test_pred_proba.update({b: fold_test_pred_proba})
         metrics.extend([{"run": b, **d} for d in fold_metrics])
         
-    return metrics, best_state_dict, normalizer, test_pred_proba
+    return metrics, best_state_dict, normalizer
 
 
 def main(args):
@@ -191,7 +189,7 @@ def main(args):
 
     # fit model
     print("fitting model")
-    metrics, best_state_dict, normalizer, test_pred_proba = bootstrap_training(exp_params, internal_loader, external_loader, device)
+    metrics, best_state_dict, normalizer = bootstrap_training(exp_params, internal_loader, external_loader, device)
     
     # save results
     pandas.DataFrame(metrics).to_csv(out_path.joinpath("metrics.csv"))
@@ -206,10 +204,6 @@ def main(args):
     # save exp params
     with open(out_path.joinpath("params.json"), "w") as f:
         json.dump(exp_params, f)
-
-    # save test predicted probabilities and true labels for each bootstrap iteration
-    with open(out_path.joinpath("test_pred_proba.json"), "w") as f:
-        json.dump(test_pred_proba, f)
 
 
 if __name__ == "__main__":

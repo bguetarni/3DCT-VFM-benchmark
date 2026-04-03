@@ -104,7 +104,7 @@ class FineTuneTrainer(BaseTrainer):
 
         # divide learning rate by 2 each 5 epochs
         if self.lr_scheduler:
-            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=30, gamma=0.5)
+            scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=20, gamma=0.5)
         else:
             scheduler = None
 
@@ -118,7 +118,6 @@ class FineTuneTrainer(BaseTrainer):
         print("training binary classifier...")
         metrics = []
         best_state_dict = None
-        test_pred_proba = []
         for epoch in tqdm.trange(self.epochs, ncols=100):
             
             # =====================   train iteration   =====================
@@ -164,12 +163,10 @@ class FineTuneTrainer(BaseTrainer):
                         split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loc_loader, self.bsize, device)
                         for m, v in split_metrics.items():
                             metrics.append({"split": "test", "dataset": loc_loader.data.cohort, "metric": m, "value": v, "step": epoch})
-                            test_pred_proba.append({"dataset": loc_loader.data.cohort, "step": epoch, "y_true": y_true, "y_pred_proba": y_pred_proba})
                 else:
                     split_metrics, (y_true, y_pred_proba) = self.evaluate(model, loader, self.bsize, device)
                     for m, v in split_metrics.items():
                         metrics.append({"split": "test", "dataset": loader.data.cohort, "metric": m, "value": v, "step": epoch})
-                        test_pred_proba.append({"dataset": loader.data.cohort, "step": epoch, "y_true": y_true, "y_pred_proba": y_pred_proba})
             
             # save checkpoint if current validation balanced accuracy is best
             validation_metric = pandas.DataFrame(metrics)
@@ -183,7 +180,7 @@ class FineTuneTrainer(BaseTrainer):
             if scheduler:
                 scheduler.step()
         
-        return metrics, best_state_dict, test_pred_proba
+        return metrics, best_state_dict
         
 
 class CoxProtoNetTrainer(BaseTrainer):
