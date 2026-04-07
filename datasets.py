@@ -748,6 +748,9 @@ class HeadNeckPETCT(TCIA):
 
         imaging = self.load_imaging_features(base_path.joinpath("features", "headneckpetct"))
 
+        with open(base_path.joinpath("features", "headneckpetct", "radiomics.pkl"), "rb") as f:
+            radiomics = pickle.load(f)
+
         rfs = {}
         clinical = {}
         for id_, p in patients.items():
@@ -794,6 +797,9 @@ class HeadNeckPETCT(TCIA):
                     if not(id_ in clinical.keys()):
                         clinical.update({id_: {}})
                     clinical[id_].update({k: v})
+
+            # add GTV volume (voxels) from radiomics
+            clinical[id_]["volume"] = radiomics[id_]["original_shape_VoxelVolume"]
         
         return imaging, clinical, rfs
 
@@ -1115,6 +1121,9 @@ class RADCURE(TCIA):
 
         imaging = self.load_imaging_features(base_path.joinpath("features", "radcure"))
 
+        with open(base_path.joinpath("features", "radcure", "radiomics.pkl"), "rb") as f:
+            radiomics = pickle.load(f)
+
         rfs = {}
         clinical = {}
         for id_, p in patients.items():
@@ -1171,6 +1180,9 @@ class RADCURE(TCIA):
                     clinical[id_][k] = self.clinical_encoding[k][v]
                 else:
                     clinical[id_][k] = self.clinical_default_values[k]
+            
+            # add GTV volume (voxels) from radiomics
+            clinical[id_]["volume"] = radiomics[id_]["original_shape_VoxelVolume"]
         
         return imaging, clinical, rfs
 
