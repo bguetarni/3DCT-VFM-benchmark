@@ -81,20 +81,6 @@ class BaseLoader(ABC):
         return data
 
     def load_imaging_features(self, dir_path):
-
-        ########################### CSV version ######################
-        # features = {}
-        # for file_ in dir_path.iterdir():
-        #     fts = pandas.read_csv(file_)
-        #     for p in fts["patient"].unique()[:50]:
-        #         p = str(p)   # make sure patient ID is string for consistency
-        #         if not (p in features.keys()):
-        #             features.update({p: {}})
-        #         fts_p = fts[fts["patient"] == p]
-        #         values = fts_p[["name", "value"]].sort_values(by="name", axis=0, ascending=True)["value"].values
-        #         features[p].update({file_.stem: values})
-        ##############################################################
-
         features = {}
         for file_ in dir_path.iterdir():
             with open(file_, "rb") as f:
@@ -799,7 +785,10 @@ class HeadNeckPETCT(TCIA):
                     clinical[id_].update({k: v})
 
             # add GTV volume (voxels) from radiomics
-            clinical[id_]["volume"] = radiomics[id_]["original_shape_VoxelVolume"]
+            if id_ in radiomics.keys():
+                clinical[id_]["volume"] = radiomics[id_]["original_shape_VoxelVolume"]
+            else:
+                clinical[id_]["volume"] = None
         
         return imaging, clinical, rfs
 
@@ -1182,7 +1171,10 @@ class RADCURE(TCIA):
                     clinical[id_][k] = self.clinical_default_values[k]
             
             # add GTV volume (voxels) from radiomics
-            clinical[id_]["volume"] = radiomics[id_]["original_shape_VoxelVolume"]
+            if id_ in radiomics.keys():
+                clinical[id_]["volume"] = radiomics[id_]["original_shape_VoxelVolume"]
+            else:
+                clinical[id_]["volume"] = None
         
         return imaging, clinical, rfs
 

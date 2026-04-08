@@ -221,6 +221,8 @@ class Data:
                 sample.clinical["age"] /=  100.
             if "dose" in sample.clinical.keys():
                 sample.clinical["dose"] /= 70.
+            if "volume" in sample.clinical.keys():
+                sample.clinical["volume"] /= 400000
 
     def get_max_clinical_values(self):
         max_values = {}
