@@ -1,0 +1,21 @@
+*.pyc
+*.ipynb
+*.xlsx
+*.csv
+models/*.pth
+models/*.pt
+.vscode/
+experiments/
+tmp/
+clinical description/
+features (CSV)/
+features (whole CT)/
+pickle datasets/
+features/artix/
+features/hecktor/
+create_clinical_prompt.bat
+create_clinical_prompt.py
+DAClassification.py
+dosiomics.yaml
+plot_loss_curves.py
+models/LLM.py

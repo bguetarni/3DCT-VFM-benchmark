@@ -1,0 +1,9 @@
+optimizer:
+  name: adam
+  initial_lr: 1e-6
+  lr_scheduler: True
+  max_lr: 5e-5
+  final_lr: 1e-6
+  warmup: 50
+batch_size: 128
+n_iter: 2000
