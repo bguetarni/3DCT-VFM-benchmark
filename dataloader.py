@@ -121,7 +121,7 @@ class Data:
         for sample in self.samples:
             sample.filter_imaging_features(extractors)
 
-    def inclusion_criteria_clinical(self, clinical_variable, value, criteria=None):
+    def inclusion_criteria_clinical(self, clinical_variable, value):
         if value is None:
             # include patient even if inclusion criteria variable is missing !!
             return True
@@ -132,10 +132,7 @@ class Data:
             case "metastasis":
                 return value == 0
             case "localisation":
-                if criteria and "localisation" in criteria.keys():
-                    return value in criteria["localisation"]
-                else:
-                    return value == 0
+                return value == 0
             case "treatment":
                 return value in [0,1]
             case "surgery":
@@ -144,9 +141,9 @@ class Data:
                 # if variable not in inclusion criteria list, include it anyways
                 return True
     
-    def apply_inclusion_criteria(self, criteria=None):
+    def apply_inclusion_criteria(self):
         # filter patients according to inclusion criteria on clinical variables
-        self.samples = [s for s in self.samples if all([self.inclusion_criteria_clinical(i, j, criteria) for i, j in s.clinical.items()])]
+        self.samples = [s for s in self.samples if all([self.inclusion_criteria_clinical(i, j) for i, j in s.clinical.items()])]
 
     def check_imaging(self, sample, exp_params):
         if sample.imaging is None:
@@ -319,7 +316,7 @@ class DataLoader:
         # filter patients according to inclusion criteria on clinical variables
         # for RADCURE include other localisation in criteria to be able to evaluate model performance on different localisations
         if self.data.cohort == "radcure" and self.split == "test":
-            self.data.apply_inclusion_criteria(criteria={"localisation": [0,1,2]})
+            self.data.apply_inclusion_criteria()
 
         # one-hot encode and categorical and filter clinical variables
         # if RADCURE dataset, keep track of patients split for later use in split_loader()
