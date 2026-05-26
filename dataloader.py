@@ -314,9 +314,7 @@ class DataLoader:
         self.data.compute_labels(task)
         
         # filter patients according to inclusion criteria on clinical variables
-        # for RADCURE include other localisation in criteria to be able to evaluate model performance on different localisations
-        if self.data.cohort == "radcure" and self.split == "test":
-            self.data.apply_inclusion_criteria()
+        self.data.apply_inclusion_criteria()
 
         # one-hot encode and categorical and filter clinical variables
         # if RADCURE dataset, keep track of patients split for later use in split_loader()
